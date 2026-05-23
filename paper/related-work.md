@@ -13,6 +13,7 @@ Five axes we differentiate on:
 |---|---|---|---|---|---|
 | Postgres RLS | none | row | DB extension | no | no |
 | Cedar (AWS) [PLDI'24, OOPSLA'25] | Lean-verified policy semantics + SMT analysis | API call | embedded library | no | yes |
+| **OPA + Rego** (CNCF) | none (tested, not verified); **PE → SQL/ES filters** is closest existing analogue to our rewriter | row via Partial Evaluation; opaque JSON otherwise | sidecar / Go SDK / WASM | no | yes |
 | SEAL (SACMAT'23) | capability-based runtime, no formal proof | computation on data | sandbox VM | partial | yes |
 | Jeeves/Jacqueline (PLDI'16) | policy-agnostic IFC, paper-level proofs | row + value | Python web framework | no | yes-ish |
 | MemArchitect (arXiv 2603.18330) | governance rules, no formal proof | memory record | mem layer | yes | yes |
@@ -45,6 +46,31 @@ relational data* — the same DSL must talk about rows, columns, and
 aggregates, and the rewriter must transform `q` not just decide
 allow/deny. Cedar's slicing theorem is the closest analogue; our
 `Rewriter.sound` theorem generalizes it to relational outputs.
+
+### OPA + Rego (CNCF)
+*Open Policy Agent*, CNCF graduated project (2018–present); core
+maintainers acquired by Apple in August 2025, enterprise offerings
+sunsetting.
+
+- Rego — Datalog-inspired declarative policy language.
+- Decision API: caller supplies an `input` JSON document; OPA returns a
+  decision (boolean / object).
+- **Partial Evaluation (PE)** — given a policy and an input doc with
+  some keys marked `unknown`, OPA emits a *residual AST* that downstream
+  code can compile to SQL `WHERE` clauses, Elasticsearch DSL,
+  MongoDB filters, etc.
+  https://www.openpolicyagent.org/docs/filtering/partial-evaluation
+- Deployment: sidecar process, Go SDK library, WASM, or as a plugin to
+  Envoy, K8s admission, Terraform validators.
+- No formal verification; correctness story is `opa test` + coverage.
+
+**Difference vs VAPOR.** Detailed in `paper/comparisons/opa.md`. One
+line: OPA's PE → SQL is the closest existing analogue to VAPOR's plan
+rewriter, but it's unverified, opaque to data shape (labels are a
+convention not a primitive), and decision-shaped rather than
+plan-shaped (caller responsible for applying the residual). VAPOR's
+position is "what OPA-PE could be if its semantics were mechanized in
+Lean and the data plane were first-class."
 
 ### SEAL (Rasifard et al., SACMAT 2023)
 *"SEAL: Capability-Based Access Control for Data-Analytic Scenarios."*
