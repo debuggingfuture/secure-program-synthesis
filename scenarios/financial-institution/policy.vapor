@@ -1,0 +1,186 @@
+// VAPOR policy — BankCo (illustrative; surface syntax is provisional,
+// final grammar in `verifier/lean/Vapor/Spec.lean`).
+//
+// Read this top-to-bottom: principal vocabulary, then global defaults,
+// then per-regime rules. Rule IDs (`R-*`) are stable for audit-log
+// joins.
+
+// --- Principal vocabulary ---------------------------------------------
+
+principals from iam.employees as p {
+  id          = p.id
+  role        = p.role
+  department  = p.department
+  country     = p.work_country
+  clearances  = p.active_clearances        // set-valued; managed by IAM
+  direct_reports = p.direct_reports        // set; supervisors only
+}
+
+// --- Resource labels --------------------------------------------------
+// Bronze-tier ingest enriches every row with these. Labels are not
+// user-settable; the connector or the LBL service is the source.
+
+labels for customers.* {
+  residency   = ingest.kyc_residency       // ISO2[]
+  pii_class   = ingest.pii_class           // DIRECT | QUASI | SENSITIVE | PCI_PAN | NONE
+}
+
+labels for deals.* {
+  mnpi_ticker = ingest.deal_ticker
+  mnpi_until  = ingest.deal_public_at      // null → indefinitely MNPI
+}
+
+labels for memory.embeddings.* {
+  source      = ingest.source              // slack | sharepoint | notion | crm | ...
+  channel     = ingest.channel             // for slack
+  residency   = inherit_from_source.residency
+  pii_class   = max_of_chunk
+}
+
+
+// --- Cross-cutting defaults -------------------------------------------
+
+@rule R-DEFAULT-DENY
+forbid read, aggregate, approve on *
+  when true     // default deny; explicit permits below open paths
+
+
+// --- PCI ---------------------------------------------------------------
+
+@rule R-PCI-001
+forbid read on cards.cvv                                // CVV never visible
+
+@rule R-PCI-002
+mask cards.pan
+  using mask_pan_keep_last4
+  when principal.role in [RETAIL_CS, FRAUD_OPS]
+
+
+// --- GDPR / data residency (Scenario 06) ------------------------------
+
+@rule R-GDPR-RES-001
+forbid read, aggregate on customers.*, accounts.*, transactions.*
+  when 'EU' in row.labels.residency
+   and principal.country not in row.labels.residency
+
+@rule R-GDPR-RES-002
+permit read on customers.*, accounts.*
+  when principal.country in row.labels.residency
+   and principal.role in [WEALTH_ADVISOR, RETAIL_CS]
+
+@rule R-GDPR-RTBF
+mask customers.*
+  using tombstone
+  when row.id in dataset("rtbf_active")
+
+@rule R-GDPR-EMBED-RES
+forbid read on memory.embeddings.*
+  when 'EU' in row.labels.residency
+   and principal.country not in row.labels.residency
+
+
+// --- MNPI / Chinese wall (Scenario 05) --------------------------------
+
+@rule R-MNPI-001
+forbid read, aggregate on deals.*
+  when principal.department == TRADING
+   and not (MNPI_DEAL_TEAM in principal.clearances)
+
+@rule R-MNPI-002
+forbid read on memory.embeddings.*
+  when row.labels.source == 'slack'
+   and row.labels.channel matches '#deal-*'
+   and principal.department != IB
+   and not (MNPI_DEAL_TEAM in principal.clearances)
+
+@rule R-MNPI-003
+permit read on deals.*
+  when row.labels.mnpi_until is not null
+   and row.labels.mnpi_until < now()        // public after announcement window
+
+
+// --- SOX / segregation of duties (Scenario 07) ------------------------
+
+@rule R-SOX-SoD-001
+forbid action approve on journal_entries.*
+  when row.initiator_id == principal.id
+
+@rule R-SOX-SoD-002
+forbid action approve on journal_entries.*
+  when row.approver_id != principal.id
+
+
+// --- FINRA 3110 supervision -------------------------------------------
+
+@rule R-FINRA-SUP-001
+permit read on comms.*
+  when row.from_user in principal.direct_reports
+   and SUPERVISOR in principal.clearances
+
+
+// --- Risk (BCBS 239) --------------------------------------------------
+
+@rule R-BCBS-AGG-001
+permit aggregate on transactions.*, positions.*
+  when principal.department == RISK
+   and aggregation.is_grouped_by_at_least(['book', 'region'])
+   and aggregation.row_count >= 50
+
+@rule R-BCBS-RAW-001
+forbid read on transactions.*, positions.*    // no raw rows for risk
+  when principal.department == RISK
+
+
+// --- Compliance investigation + audit (Scenario 08) -------------------
+
+@rule R-AUDIT-CASE-001
+forbid read, aggregate on *
+  when principal.department in [COMPLIANCE, REGULATOR]
+   and (context.case_id is null
+        or case_status(context.case_id) != OPEN)
+
+@rule R-EXAM-001
+permit read on *
+  when principal.department == REGULATOR
+   and case_status(context.case_id) == OPEN
+   and resource.path in case_scope(context.case_id)
+
+@rule R-AUDIT-LOG-001
+always log read, aggregate, approve
+  when principal.department in [COMPLIANCE, REGULATOR]
+  with { case_id, principal.id, resource_path, ts, rule_id, decision }
+
+@rule R-AUDIT-LOG-002
+always log read, aggregate, approve
+  on { deals.*, journal_entries.* }
+  with { principal.id, resource_path, ts, rule_id, decision }
+
+
+// --- Volcker prop separation ------------------------------------------
+
+@rule R-VOLCKER-001
+forbid read, aggregate on prop_positions.*
+  when principal.desk != 'PROP'
+
+
+// --- Engineering / IT (cannot see customer rows) ----------------------
+
+@rule R-IT-001
+forbid read, aggregate on customers.*, accounts.*, transactions.*, comms.*
+  when principal.department == IT
+
+@rule R-IT-002
+permit read, aggregate on infra.*, ingest.metrics.*, schema.*
+  when principal.department == IT
+
+
+// --- Quant / data science ---------------------------------------------
+
+@rule R-QUANT-001
+forbid read on transactions.*, positions.*
+  when principal.department == QUANT
+
+@rule R-QUANT-002
+permit aggregate on transactions.*, positions.*
+  when principal.department == QUANT
+   and aggregation.row_count >= 1000           // higher k for modeling
