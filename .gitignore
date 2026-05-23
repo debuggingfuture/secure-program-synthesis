@@ -1,0 +1,26 @@
+.DS_Store
+.tmp/
+.cache/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.venv*/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+
+# Lean
+.lake/
+build/
+lakefile.olean
+*.olean
+*.ilean
+*.hash
+
+# Editor
+.vscode/
+.idea/

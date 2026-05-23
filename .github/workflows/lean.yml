@@ -1,0 +1,21 @@
+name: lean
+
+on:
+  push:
+    branches: [main]
+    paths: ["verifier/lean/**", ".github/workflows/lean.yml"]
+  pull_request:
+    paths: ["verifier/lean/**", ".github/workflows/lean.yml"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: verifier/lean
+    steps:
+      - uses: actions/checkout@v4
+      - uses: leanprover/lean-action@v1
+        with:
+          lake-package-directory: verifier/lean
+          use-mathlib-cache: false
