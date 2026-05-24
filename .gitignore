@@ -29,8 +29,8 @@ prototype/**/*.rs.bk
 # Cargo.lock IS committed — postern-diff is a binary workspace and we
 # want reproducible builds across machines + CI.
 
-# Paper artifacts
-paper/paper.pdf
+# Paper artifacts — paper.pdf is committed so reviewers don't need
+# tectonic / mactex locally; rebuild via `bash paper/build.sh`.
 paper/*.aux
 paper/*.log
 
