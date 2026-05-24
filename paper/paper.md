@@ -46,76 +46,48 @@ keywords:
 
 # Introduction
 
-A *data lakehouse* is an analytic substrate that consolidates
-multiple upstream operational sources via extract-transform-load
-(ETL) pipelines into a single columnar store — typically Parquet
-on object storage, queried in-process by DuckDB [@duckdb].
-Recent deployments couple this substrate with LLM agents that
-issue dataframe queries directly, mediated by tool-call protocols
-such as the Model Context Protocol [@mcp]. Indirect-prompt-
-injection studies [@agentdojo2024; @camel2025] establish that the
-agent must be treated as adversarial. The conjunction raises an
-access-control question that pre-LLM database access-control
-mechanisms were not designed to answer.
-
-## Existing approaches
-
-Two responses dominate current deployments. Row- and
-column-level security in ACID-class databases such as PostgreSQL
-[@rls-postgres] binds authorization predicates to relations
-within a single engine; the policies do not survive the ETL
-transformation into an engine-agnostic Parquet store, and
+Production agentic systems are converging on a data-lakehouse
+substrate organised under data-mesh and local-first principles,
+in which heterogeneous institutional sources are ingested and
+compacted into engine-agnostic columnar storage — commonly
+Apache Arrow Parquet on S3-class object stores, queried
+in-process by DuckDB [@duckdb] — and the resulting context layer
+is read at inference time by LLM agents, often co-located with
+on-prem or edge runtimes hosting local models, as exemplified by
+mem0 [@mem0], Notion AI, and Airbyte-class ETL workers; the
+salient access-control consequence is that the entity issuing
+SQL or dataframe queries against the lakehouse is no longer a
+human analyst on a stable role but an LLM agent mediated by
+tool-call protocols such as the Model Context Protocol [@mcp]
+and demonstrably susceptible to indirect prompt injection
+[@agentdojo2024; @camel2025], whose access pattern is
+short-term, contextual, and task-oriented and for which
+role-based access control — including its temporally-scoped
+variant TRBAC — does not scale. The two responses dominant in
+current deployments each accept a substantial limitation:
+row- and column-level security in ACID-class databases such as
+PostgreSQL [@rls-postgres] binds authorization predicates to
+relations within a single engine, so policies do not survive
+the ETL transformation into an engine-agnostic Parquet store and
 reconstructing them externally demands per-source policy
 duplication that scales poorly with source count and policy
-churn. The deployed alternative — physical tenant segregation
-across object-storage prefixes queried by disjoint engine
-instances — enforces the per-source perimeter by absence,
-forfeiting the cross-source joins that motivate the lakehouse to
-begin with. Neither approach offers a compositional authorization
-guarantee over heterogeneous ingest.
-
-## A property gap
-
-We restate the underlying mismatch precisely. Fix upstream
-sources $S_1, \ldots, S_n$ with access-control denotations
-$A_1, \ldots, A_n$ over their respective schemas, and let
-$L = \bigcup_i S_i$ denote the materialised lakehouse. The
-authorization denotation $A_L$ of $L$ is determined by the
-ingest service account's IAM role alone; the originals
-$\{A_i\}$ admit no semantic representative in $A_L$ once
-materialisation has occurred. The effective permission of an
-agent issuing a plan against $L$ is therefore the *union*
-$\bigcup_i \mathit{perm}_{A_i}$ of upstream principals'
-permissions, not the *intersection* under the querying
-identity. When channel ACLs, field-level security, and
-customer-scoped tokens collapse to a single service-account role
-at ingest, an indirect-prompt-injected agent inherits the read
-surface of the ingest service.
-
-## Approach
-
-We investigate a third point in the design space: a
-*plan-level rewriter* mediating every read against a column-grant
-policy. We pose two requirements. (1) The rewriter's
-correctness — every accepted plan respects the policy — should
-admit a mechanised proof, on the grounds that this is the
-property most readily verified statically and most readily
-falsified by an indirect-prompt-injected agent in deployment.
-(2) The values that the rewriter releases should remain bounded
-once they cross the gateway boundary, both lexically and in the
-operations the agent's code may perform with them.
-
-We address (1) in Lean~4: a Plan IR, a column-grant policy
-language, and a rewriter
-$\mathrm{rewrite} : \mathit{Catalog} \to \mathit{Policy} \to
-\mathit{Principal} \to \mathit{Plan} \to \mathit{Option}\
-\mathit{Plan}$, with nine theorems established without `sorry`
-(§4). We address (2) in Rust, mechanising in the type system a
-weaker analog of capture-checking [@capabilities-agents-2026]:
-sealed capability tokens whose construction is private to the
-gateway, branded by an invariant scope lifetime, and consumed at
-opaque-receipt sinks (§3). The two layers compose without
-re-verifying each other's trusted base.
+churn, while the deployed alternative — physical tenant
+segregation across object-storage prefixes queried by disjoint
+engine instances — enforces the per-source perimeter by absence
+and forfeits the cross-source joins that motivate the lakehouse
+to begin with. Neither offers a compositional authorization
+guarantee over heterogeneous ingest: when channel ACLs,
+field-level security, and customer-scoped tokens collapse to a
+single ingest IAM role at materialisation, an indirect-prompt-
+injected agent inherits the *union* of the upstream principals'
+permissions rather than the *intersection* under the querying
+identity. We propose plan-level rewriting against a column-grant
+policy as a third point in this design space, and present
+**Postern**, an artifact whose three components — a Lean~4
+-mechanised plan rewriter, a Rust capability-tracking layer
+constraining the agent's downstream computation, and a
+reference-conformance harness binding the two — are described in
+the remainder of this paper.
 
 ## Contributions
 
