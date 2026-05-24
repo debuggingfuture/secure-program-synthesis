@@ -35,68 +35,103 @@ keywords:
 
 # Introduction
 
-Two shifts in production agentic systems motivate this work. **First**,
-context for an LLM agent is no longer drawn from a single SaaS API
-under that SaaS's own RBAC; it is drawn from a centralized
-lakehouse (DuckDB over Parquet on S3 [@duckdb]) populated by
-Airbyte-style ETL and long-term memory services [@mem0].
-**Second**, agents *issue* the dataframe query themselves — through
-MCP tools [@mcp] — rather than receiving rows hand-picked by a human
-analyst.
+The deployment shape of an agentic system in 2026 has two
+properties that 2024-era access control was not designed for.
+**(i)** Context is materialized from heterogeneous upstream sources
+into a single columnar lakehouse — typically DuckDB over Parquet on
+S3 [@duckdb] — populated by ETL pipelines [@mem0]. **(ii)** The
+agent itself *issues* the dataframe query, through MCP tools [@mcp];
+indirect prompt-injection benchmarks [@agentdojo2024; @camel2025]
+make the case that the agent must be treated as adversarial.
 
-Stated as a property gap: per-source authorization is
-non-compositional with respect to ETL fusion. For sources
-$S_1, \ldots, S_n$ with access-control denotations
-$A_1, \ldots, A_n$, the materialized lakehouse $L = \bigcup_i S_i$
-has authorization denotation $A_L$ determined by the ingest
-service-account's IAM role alone; the originals $\{A_i\}$ have no
-semantic representative in $A_L$. The effective permission of an
-agent issuing a plan against $L$ is therefore the *union* of
-upstream principals' permissions, not the *intersection* under the
-querying identity — and the lake-side IAM role is the sole
-boundary between an indirect-prompt-injected agent and the merged
-dataset. *Concretely:* a 2024 deployment might hold Slack threads
-behind channel ACLs, Salesforce contacts behind field-level
-security, and Stripe charges behind customer-scoped API tokens; in
-the 2026 deployment all three land in one Parquet bucket queried
-by a single DuckDB service account.
+**The combination breaks per-source authorization.** For upstream
+sources $S_1, \ldots, S_n$ with access-control denotations
+$A_1, \ldots, A_n$, the materialized lakehouse
+$L = \bigcup_i S_i$ has authorization denotation $A_L$ determined
+by the ingest service-account's IAM role alone; the originals
+$\{A_i\}$ have no semantic representative in $A_L$. The effective
+permission of an agent querying $L$ is the *union* of upstream
+principals' permissions, not the *intersection* under the querying
+identity. Concretely: when Slack channel ACLs, Salesforce field-
+level security, and Stripe customer-scoped tokens all collapse to
+one DuckDB service-account role at ingest, an indirect-prompt-
+injected agent inherits the read surface of the ingest service
+itself.
 
-This paper restores that boundary by inserting a verified gateway
-between agents and the lake. The gateway holds a single policy
-artifact and **rewrites** every plan it sees so that *both the
-output schema and the predicate read-set* are contained in what
-the policy permits. We treat the gateway as the trusted base;
-everything beyond it (LLM, agent-generated code) is untrusted, and
-recent benchmarks for indirect prompt injection [@agentdojo2024;
-@camel2025] confirm that "untrusted" is the right default.
+**Postern** restores the boundary with a two-layer verified
+gateway.
+
+- **Layer 1 — plan boundary.** A column-grant policy DSL and a
+  plan rewriter whose soundness is mechanized in Lean 4 [@lean4].
+  For every accepted plan two invariants hold: the output schema
+  is contained in the policy-allowed columns
+  (`rewrite_sound`), and every column read by a `Filter` predicate
+  is policy-allowed (`rewrite_filter_sound`, closing the
+  `WHERE ssn = ?` side-channel). Refusal is explicit — unknown
+  relations and forbidden filter columns produce `None`, not
+  silently empty schemas.
+
+- **Layer 2 — agent-code boundary.** A Rust capability-tracking
+  layer inspired by Odersky et al. 2026
+  [@capabilities-agents-2026], which proposes Scala 3
+  capture-checking for the same purpose. The verified output of
+  Layer 1 is wrapped in `Tagged<T, C>` and handed to the agent
+  together with a single-use `Cap<C>`. Sanctioned compute
+  operations (`map`, `and_then`) preserve the tag; un-tagging
+  requires consuming the Cap at a sanctioned sink. Capabilities
+  are unforgeable — sealed types, private constructors — so
+  downstream agent code cannot mint a Cap, and the inner value of
+  `Tagged` is unreachable without one.
+
+The two layers are stack-complementary. Layer 1's correctness is
+mechanized (Lean theorems); Layer 2's correctness reduces to Rust's
+privacy and ownership rules, and we exhibit two bypass attempts
+that fail at compile time (forging `Cap`, accessing
+`Tagged::value`).
 
 ## Contributions
 
-1. A small, fully-mechanized core in **Lean 4** [@lean4]: a Plan IR
-   (`Scan`/`Project`/`Filter`), a column-grant policy language, and
-   a `rewrite : Catalog → Policy → Principal → Plan → Option Plan`
-   function. *Nine* `sorry`-free theorems span output-column
-   soundness, filter-predicate soundness, schema subset, monotonicity
-   in policy, idempotence, and explicit-refusal lemmas for unknown
-   relations and forbidden filter columns (§4).
+1. **Mechanized plan-boundary core (Layer 1).** A Plan IR
+   (`Scan`/`Project`/`Filter`), a column-grant policy language,
+   and `rewrite : Catalog → Policy → Principal → Plan → Option Plan`,
+   all in Lean 4. **Nine** `sorry`-free theorems span output-
+   column soundness, filter-predicate soundness, schema subset,
+   monotonicity in policy, idempotence, and explicit-refusal
+   lemmas for unknown relations and forbidden filter columns
+   (§4). Per-theorem axiom dependencies are audited
+   (`CheckAxioms.lean`) and bounded by `{propext, Quot.sound}` —
+   Lean's built-in foundational axioms; two theorems depend on
+   none.
 
-2. A **Rust prototype** (`postern-core`) mirroring the Lean types
-   and rewriter. Target deployment: a Polars [@polars] / DuckDB
-   gateway with biscuit-token [@biscuit] capability authentication.
+2. **Capability-tracking guardrail (Layer 2).** A Rust crate
+   `postern-guardrail` providing sealed `Cap<C>` and
+   `Tagged<T, C>` types and a `gateway::issue_plan` entry point
+   that combines the verified rewrite with capability issuance.
+   Two bypass attempts are pinned as `compile_fail` doctests:
+   constructing `Cap` outside the crate, and reading
+   `Tagged::value` directly. Rust has no effect system, so the
+   layer's perimeter is the type system's privacy boundary; we
+   discuss the limits in §3.
 
-3. A **reference-conformance harness** (`postern-diff`). Lean emits
-   a JSON corpus of `(catalog, policy, principal, plan,
-   expected_outcome)` tuples; the Rust side replays each case and
-   asserts byte-equivalence of the resulting `Option<Plan>`. 18 / 18
-   cases pass on the demo corpus, including three refusal regressions
-   for known attack shapes. We label this *conformance testing*, not
-   QuickCheck-style differential testing: the corpus is hand-curated,
-   property-based generation is future work (§6).
+3. **Rust mirror + reference-conformance harness.** A Rust crate
+   `postern-core` mirrors the Lean types and rewriter byte-for-
+   byte (target deployment: a Polars [@polars] / DuckDB gateway
+   with biscuit-token [@biscuit] capability distribution). The
+   harness `postern-diff` ingests a JSON corpus emitted by Lean
+   and asserts byte-equivalence of the resulting `Option<Plan>`,
+   schema, predicate read-set, and touched relation. **18 / 18
+   cases pass**, including three refusal regressions for known
+   attack shapes (filter-on-forbidden-column, unknown-relation,
+   nested forbidden filter). We label this *reference-conformance
+   testing*, not QuickCheck-style differential testing — the
+   corpus is hand-curated; property-based generation is §6.
 
-4. A **financial-institution case study** (Kaggle
-   `transactions-fraud-datasets`, 3 principals
-   — CRM, CardOps, FraudRisk) exercising PII redaction,
-   cross-department refusal, and minimum-necessary disclosure (§5).
+4. **Financial-institution case study.** Kaggle
+   `transactions-fraud-datasets` with three principals
+   (CRM, CardOps, FraudRisk) exercising PII redaction, cross-
+   department refusal, and minimum-necessary disclosure (§5). Each
+   row of the demo table is a corpus case driving the conformance
+   harness.
 
 # Plan IR (preview)
 
@@ -186,26 +221,62 @@ Post-hoc projection is the simplest algorithm that admits a clean
 soundness proof. Predicate-pushdown variants can be verified
 against this rewriter as a reference; we leave that to future work.
 
-## Defense-in-depth with capability tracking
+## Layer 2: capability-tracking guardrail
 
-Postern enforces at the *plan boundary*: the gateway is the last
-chance to bound what a query can read. The complementary defense
-sits at the *agent-code boundary*: bound what the agent's emitted
-code can *do* with whatever it does receive. Odersky et al.
-[@capabilities-agents-2026] propose exactly this, using Scala 3
-capture-checking to make capabilities first-class program
-variables so agent-generated code cannot exfiltrate data it does
-not hold a capability for. The two layers compose: an agent issuing
-a query through Postern receives at most the policy-allowed columns
-(Theorems 1–2); the agent's downstream code then runs under
-capture-checked capabilities and cannot smuggle even those columns
-to an out-of-scope effect.
+Layer 1 (the Lean rewriter) bounds *what data reaches the agent*.
+Layer 2 bounds *what the agent's compute can do with it*. Odersky
+et al. [@capabilities-agents-2026] propose using Scala 3
+capture-checking for exactly this — capabilities as first-class
+program variables, so agent-generated code cannot exfiltrate data
+it does not hold a capability for. Rust has no capture-checking,
+but the same intuition can be mechanized via **sealed types**:
+capabilities are unforgeable tokens minted only by the gateway,
+and data is wrapped in `Tagged<T, C>` whose inner value cannot be
+reached without consuming a matching `Cap<C>`.
 
-We treat capture-checked execution as **out of TCB scope for
-Postern** (it is upstream of us), but the Lean rewriter is
-deliberately small precisely so that a system like
-[@capabilities-agents-2026] can wrap it without re-verifying the
-gateway side.
+The `postern-guardrail` crate provides:
+
+```rust
+// Sealed: only the gateway can mint; downstream cannot construct.
+pub struct Cap<C: 'static> { /* private fields */ }
+pub struct Tagged<T, C: 'static> { /* private value */ }
+
+impl<T, C: 'static> Tagged<T, C> {
+  pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Tagged<U, C>;
+  pub fn and_then<U>(self, f: impl FnOnce(T) -> Tagged<U, C>) -> Tagged<U, C>;
+  pub fn release(self, _: Cap<C>) -> T;   // single-use: Cap moves
+}
+
+pub mod gateway {
+  pub fn issue_plan(cat: &Catalog, pol: &Policy, prin: &str, plan: &Plan)
+    -> Option<(Tagged<Plan, AllowedColumns>, Cap<AllowedColumns>)>;
+  // None iff Layer 1's `rewrite` refused.
+}
+```
+
+The gateway's `issue_plan` is the only entry to capability minting:
+it runs the verified rewriter and, on accept, returns a
+`Tagged<Plan, AllowedColumns>` together with its single-use
+`Cap<AllowedColumns>`. Agent code may compose the value through
+`map` / `and_then` (the tag is preserved by construction) but the
+only path back to a raw `T` is `release(cap)`, which consumes the
+Cap.
+
+**What this defends against.** Forging a Cap (`Cap` is sealed),
+reading `Tagged::value` directly (private field), and using a
+released Cap twice (consumed by `release`). The first two are
+demonstrated as `compile_fail` doctests in the crate: an
+attempt to construct a `Cap` or to project `t.value` does not
+type-check.
+
+**What it does not defend against.** Rust has no effect system. A
+capability-bearing agent can still side-channel through `panic!`,
+timing, or thread-local globals. We make `Cap: !Send + !Sync` (via
+`PhantomData<*const ()>`) to close the obvious thread-move, and
+deliberately do not implement `Display` / `Debug` for `Tagged`, but
+a determined adversary inside the agent runtime is out of scope.
+The full hardening path — a custom lint or `unsafe`-style markers
+gating exit sinks — is §6.
 
 # Formal model
 
