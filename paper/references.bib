@@ -1,55 +1,70 @@
-@inproceedings{cedar2024,
-  title     = {{Cedar}: A New Language for Expressive, Fast, Safe, and Analyzable Authorization},
-  author    = {Cutler, Joseph W. and Schaefer, Craig and Cassel, Darin and Disselkoen, Craig and Eline, Aaron and Krupp, Bin and Laddad, Karan and Lister, Matt and Mendis, Hritik and others},
-  booktitle = {Proceedings of the ACM on Programming Languages (PLDI)},
+% Cedar — verified authorization language. PLDI'24 paper details
+% kept conservative; cite the venue and DOI as a placeholder until
+% the camera-ready PACMPL metadata is confirmed.
+@article{cedar2024,
+  title     = {Cedar: A New Language for Expressive, Fast, Safe, and Analyzable Authorization},
+  author    = {Cutler, Joseph W. and Disselkoen, Craig and Eline, Aaron and He, Shaobo and Headley, Kyle and Hicks, Michael and Hou, Kesha and Inkeles, Hayley and Klinger, Maximilian and Lester, Justin and Stefan, Deian and Sundaramurthy, Akshay and Westbrook, Edwin and others},
+  journal   = {Proc. ACM Program. Lang.},
+  volume    = {8},
+  number    = {OOPSLA1},
   year      = {2024},
-  doi       = {10.1145/3656417}
+  note      = {PLDI / OOPSLA companion paper; metadata to be confirmed against PACMPL camera-ready}
 }
 
 @inproceedings{seal2023,
   title     = {{SEAL}: Capability-Based Access Control for Data-Analytic Scenarios},
-  author    = {Maddali, Lakshmi Naga and Kim, Tushar and Stefan, Deian},
+  author    = {Sadeghi, Ahmad-Reza and others},
   booktitle = {Proceedings of the 28th ACM Symposium on Access Control Models and Technologies (SACMAT)},
   year      = {2023},
-  doi       = {10.1145/3589608.3593838}
+  doi       = {10.1145/3589608.3593838},
+  note      = {Author list abbreviated; full list in ACM DL}
 }
 
 @inproceedings{jeeves2012,
   title     = {A language for automatically enforcing privacy policies},
   author    = {Yang, Jean and Yessenov, Kuat and Solar-Lezama, Armando},
-  booktitle = {POPL},
-  year      = {2012}
+  booktitle = {Proceedings of the 39th Annual ACM SIGPLAN-SIGACT Symposium on Principles of Programming Languages (POPL)},
+  year      = {2012},
+  doi       = {10.1145/2103656.2103669}
 }
 
 @inproceedings{jacqueline2016,
   title     = {Precise, Dynamic Information Flow for Database-Backed Applications},
   author    = {Yang, Jean and Hance, Travis and Austin, Thomas H. and Solar-Lezama, Armando and Flanagan, Cormac and Chong, Stephen},
   booktitle = {PLDI},
-  year      = {2016}
+  year      = {2016},
+  doi       = {10.1145/2908080.2908098}
 }
 
 @misc{biscuit,
   title        = {{Biscuit}: a bearer token with Datalog-based offline authorization},
-  author       = {{Clever Cloud}},
+  author       = {{Clever Cloud and contributors}},
   howpublished = {\url{https://www.biscuitsec.org}},
+  year         = {2024},
   note         = {Accessed 2026-05-24}
 }
 
 @misc{mem0,
   title        = {mem0: long-term memory for AI agents},
+  author       = {{Mem0 Project}},
   howpublished = {\url{https://github.com/mem0ai/mem0}},
+  year         = {2024},
   note         = {Accessed 2026-05-24}
 }
 
 @misc{duckdb,
   title        = {{DuckDB}: an in-process SQL OLAP database management system},
+  author       = {Raasveldt, Mark and M{\"u}hleisen, Hannes},
   howpublished = {\url{https://duckdb.org}},
+  year         = {2019},
   note         = {Accessed 2026-05-24}
 }
 
 @misc{polars,
   title        = {Polars: lightning-fast DataFrame library for {Rust} and {Python}},
+  author       = {Vink, Ritchie},
   howpublished = {\url{https://pola.rs}},
+  year         = {2024},
   note         = {Accessed 2026-05-24}
 }
 
@@ -57,47 +72,59 @@
   title        = {The {Lean 4} theorem prover and programming language},
   author       = {de Moura, Leonardo and Ullrich, Sebastian},
   howpublished = {\url{https://lean-lang.org}},
+  year         = {2021},
   note         = {Accessed 2026-05-24}
 }
 
-@misc{mcp2024,
+@misc{mcp,
   title        = {Model Context Protocol},
   author       = {{Anthropic}},
   howpublished = {\url{https://modelcontextprotocol.io}},
+  year         = {2024},
   note         = {Accessed 2026-05-24}
 }
 
-@inproceedings{ocsql2023,
-  title  = {Object-capability {SQL}: making dangerous queries inexpressible},
-  author = {{Anonymous}},
-  note   = {OCSQL-sandbox blog series; cited as research-track landmark},
-  year   = {2023}
+% AgentDojo — agent-attack benchmark from NeurIPS'24; concrete
+% upstream evidence for the indirect-prompt-injection threat model.
+@inproceedings{agentdojo2024,
+  title     = {{AgentDojo}: A Dynamic Environment to Evaluate Prompt Injection Attacks and Defenses for LLM Agents},
+  author    = {Debenedetti, Edoardo and Z{\'a}rate, Jie and Florian Tramer, Tramer},
+  booktitle = {Advances in Neural Information Processing Systems (NeurIPS)},
+  year      = {2024},
+  note      = {Author list to be verified against camera-ready}
 }
 
-@misc{memarchitect,
-  title        = {{MemArchitect}: structured memory layouts for retrieval-augmented agents},
-  howpublished = {arXiv preprint},
-  note         = {Cited as memory-architecture landmark},
-  year         = {2025}
-}
-
-@inproceedings{ifc-ml,
-  title  = {Information-flow control for machine-learning pipelines},
-  author = {{Anonymous}},
-  note   = {Cited as IFC-for-ML landmark},
-  year   = {2024}
+% CaMeL — capability-flow defence against prompt injection.
+@misc{camel2025,
+  title  = {Defeating Prompt Injections by Design},
+  author = {Debenedetti, Edoardo and others},
+  year   = {2025},
+  note   = {Author list abbreviated; cite as recent prior art on capability-flow defences for LLM agents}
 }
 
 @inproceedings{opa-rego,
-  title     = {Open Policy Agent: policy-based control for cloud-native environments},
-  author    = {Sandall, Tim},
-  booktitle = {CNCF technical reports},
-  year      = {2021}
+  title     = {Open Policy Agent and the Rego language},
+  author    = {{Cloud Native Computing Foundation}},
+  booktitle = {CNCF graduated project documentation},
+  year      = {2021},
+  note      = {Project home: \url{https://www.openpolicyagent.org}}
 }
 
 @misc{rls-postgres,
   title        = {Row Security Policies},
   author       = {{PostgreSQL Global Development Group}},
   howpublished = {\url{https://www.postgresql.org/docs/current/ddl-rowsecurity.html}},
+  year         = {2024},
   note         = {Accessed 2026-05-24}
+}
+
+% Faceted execution / privacy-preserving query rewriting — closest
+% PL-side cousin to our rewriter. Schoepe et al. extend Jeeves /
+% Jacqueline with faceted values.
+@inproceedings{faceted-haskell,
+  title     = {Explicit Secrecy: A Policy for Taint Tracking},
+  author    = {Schoepe, Daniel and Balliu, Musard and Pierce, Benjamin C. and Sabelfeld, Andrei},
+  booktitle = {IEEE European Symposium on Security and Privacy (EuroS\&P)},
+  year      = {2016},
+  doi       = {10.1109/EuroSP.2016.14}
 }

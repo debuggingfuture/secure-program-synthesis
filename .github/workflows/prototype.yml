@@ -8,17 +8,24 @@ on:
     paths: ["prototype/**", ".github/workflows/prototype.yml"]
 
 jobs:
-  test:
+  rust:
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: prototype
     steps:
       - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          enable-cache: true
-      - run: uv venv
-      - run: uv pip install -e ".[dev]"
-      - run: uv run pytest -q
-      - run: uv run ruff check src tests
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: prototype
+      - name: cargo fmt
+        run: cargo fmt --all -- --check
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: cargo test
+        run: cargo test --workspace
+      - name: conformance test against committed corpus
+        run: cargo run -p postern-diff -- corpus/postern-corpus.json

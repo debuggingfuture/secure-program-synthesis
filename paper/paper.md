@@ -4,132 +4,82 @@ subtitle: "Secure Program Synthesis Hackathon 2026 — Track 3 research artifact
 author:
   - name: FractalBox
 abstract: |
-  Agentic systems increasingly read their context out of a single
-  lakehouse — DuckDB over Parquet on S3, fed by Airbyte / mem0-style
-  retrieval pipelines — and the per-source RBAC that protected each
-  upstream SaaS no longer holds at the lake boundary. We present
-  **Postern**, a research artifact that pairs (a) a small policy DSL
-  and dataframe-plan IR mechanized in **Lean 4** with a
-  fully-proved soundness theorem (no `sorry`, only Lean's built-in
-  axioms), (b) a Rust prototype mirroring the same `rewrite`
-  algorithm, and (c) a **differential test harness** that pipes a
-  Lean-emitted JSON corpus into the Rust rewriter and asserts
-  byte-equality of the rewritten plans. The artifact closes the gap
-  between Cedar-style verified policy authoring and capability-based
-  data sandboxes by verifying the *rewriter*, not just per-call
-  authorization. We use a financial-institution scenario (Kaggle
-  transactions dataset, three departments) to make the threat model
-  concrete and identify open challenges around joins, filter
-  side-channels, and aggregation inference.
+  Agentic context now lives in a single lakehouse — DuckDB over
+  Parquet on S3, fed by Airbyte / mem0-style retrieval — but the
+  per-source RBAC that protected each upstream SaaS dies at the lake
+  boundary. **Postern** is a verified gateway that rewrites every
+  dataframe plan against a column-grant policy before it reaches the
+  executor. The core — Plan IR, policy, rewriter — is mechanized in
+  Lean 4 with nine `sorry`-free theorems, including
+  *output-column soundness* and *filter-predicate soundness*
+  (closing the `WHERE ssn = ?` side-channel the IR previously
+  admitted). A Rust mirror runs the same algorithm and is
+  **conformance-tested against a Lean-emitted JSON reference
+  corpus** of 18 cases (15 accept, 3 refusal), all green. We
+  exercise the artifact on a 3-department financial-institution
+  scenario and identify three load-bearing open problems — joins,
+  aggregation / DP, capability attenuation.
 keywords:
   - access control
   - formal verification
   - Lean 4
   - data lakehouse
   - LLM agents
-  - differential testing
+  - conformance testing
 ---
 
 # Introduction
 
 Two shifts in production agentic systems motivate this work. **First**,
 context for an LLM agent is no longer drawn from a single SaaS API
-guarded by that SaaS's own RBAC; it is drawn from a centralized
-lakehouse (typically DuckDB over Parquet on S3 [@duckdb]) populated by
-Airbyte-style ETL and by long-term memory services [@mem0]. **Second**,
-agents are increasingly the entity *issuing* the SQL/dataframe query
-— through MCP tools [@mcp2024] — rather than receiving rows
-hand-picked by a human analyst. The cost of asking a question has
-dropped; so has the security boundary that used to protect each
-source.
+under that SaaS's own RBAC; it is drawn from a centralized
+lakehouse (DuckDB over Parquet on S3 [@duckdb]) populated by
+Airbyte-style ETL and long-term memory services [@mem0].
+**Second**, agents *issue* the dataframe query themselves — through
+MCP tools [@mcp] — rather than receiving rows hand-picked by a human
+analyst. As query cost drops, so does the per-source authorization
+boundary.
 
-This paper is about *restoring* that boundary by inserting a verified
-gateway between agents and the lake. The gateway holds a single
-policy artifact and **rewrites** every plan it sees so the result is
-contained in what the policy permits. We treat the gateway as the
-trusted base; everything beyond it (LLM, agent-generated code) is
-untrusted.
+This paper restores that boundary by inserting a verified gateway
+between agents and the lake. The gateway holds a single policy
+artifact and **rewrites** every plan it sees so that *both the
+output schema and the predicate read-set* are contained in what
+the policy permits. We treat the gateway as the trusted base;
+everything beyond it (LLM, agent-generated code) is untrusted, and
+recent benchmarks for indirect prompt injection [@agentdojo2024;
+@camel2025] confirm that "untrusted" is the right default.
 
 ## Contributions
 
-1. A narrow, fully-mechanized core in **Lean 4** [@lean4]:
-   a Plan IR (`Scan`/`Project`/`Filter`), a column-grant policy
-   language, and a `rewrite` algorithm whose **column-soundness**
-   theorem — "every column in the rewritten plan's output schema is
-   allowed by the policy" — is proved with no `sorry`, depending only
-   on Lean's standard axioms `propext` and `Quot.sound`.
+1. A small, fully-mechanized core in **Lean 4** [@lean4]: a Plan IR
+   (`Scan`/`Project`/`Filter`), a column-grant policy language, and
+   a `rewrite : Catalog → Policy → Principal → Plan → Option Plan`
+   function. *Nine* `sorry`-free theorems span output-column
+   soundness, filter-predicate soundness, schema subset, monotonicity
+   in policy, idempotence, and explicit-refusal lemmas for unknown
+   relations and forbidden filter columns (§4).
 
-2. A **Rust prototype** that mirrors the Lean types and rewriter and
-   targets a DuckDB + Polars [@polars] dataframe gateway. Capability
-   authentication is via biscuit tokens [@biscuit].
+2. A **Rust prototype** (`postern-core`) mirroring the Lean types
+   and rewriter. Target deployment: a Polars [@polars] / DuckDB
+   gateway with biscuit-token [@biscuit] capability authentication.
 
-3. A **differential test harness**: the Lean side emits a JSON corpus
-   of `(catalog, policy, principal, plan)` inputs paired with the
-   reference rewritten plan; the Rust harness re-runs `rewrite` over
-   each input and asserts byte-equal output. 10/10 cases pass on the
-   demo corpus; any future divergence between the Lean spec and the
-   Rust implementation surfaces as a CI failure.
+3. A **reference-conformance harness** (`postern-diff`). Lean emits
+   a JSON corpus of `(catalog, policy, principal, plan,
+   expected_outcome)` tuples; the Rust side replays each case and
+   asserts byte-equivalence of the resulting `Option<Plan>`. 18 / 18
+   cases pass on the demo corpus, including three refusal regressions
+   for known attack shapes. We label this *conformance testing*, not
+   QuickCheck-style differential testing: the corpus is hand-curated,
+   property-based generation is future work (§6).
 
 4. A **financial-institution case study** (Kaggle
-   `transactions-fraud-datasets`) with three principals
-   (CRM, CardOps, FraudRisk) that exercises PII redaction,
-   cross-department refusal, and minimum-necessary disclosure.
+   `transactions-fraud-datasets`, 3 principals
+   — CRM, CardOps, FraudRisk) exercising PII redaction,
+   cross-department refusal, and minimum-necessary disclosure (§5).
 
-# Threat model
+# Plan IR (preview)
 
-We assume a trusted gateway process holding the policy artifact and
-the cryptographic root for capability tokens. Everything else is
-untrusted:
-
-| Component                               | Trust | Why                                                                       |
-| --------------------------------------- | :---: | ------------------------------------------------------------------------- |
-| LLM / agent (planner)                   |   ✗   | Can be jailbroken; may emit hostile SQL / dataframe ops.                  |
-| Tool-generated code (executors)         |   ✗   | Indirect injection from retrieved context; supply chain.                  |
-| Capability tokens (biscuit) [@biscuit]  |   ~   | Trusted only insofar as the gateway verifies the signature.               |
-| Gateway process (Postern)               |   ✓   | TCB. Holds the Lean-verified rewriter and the policy.                     |
-| DuckDB + Parquet store                  |   ✓   | TCB. Assumed to honour the rewritten plan literally.                      |
-| Lake operators / DBAs                   |   ✓   | Out of scope — same as for any RDBMS-RLS [@rls-postgres] deployment.      |
-
-In-scope attacks: prompt-injected agents requesting forbidden columns;
-agent-generated dataframe ops that over-project; cross-department
-queries by mis-scoped capability tokens; unknown principals.
-
-Out of scope for this draft: filter side-channels (a `WHERE` clause
-that references a forbidden column to *infer* its values without
-projecting it); aggregation/inference attacks; covert channels
-through query latency.
-
-# Design
-
-Postern compiles a single policy artifact to plan-level enforcement.
-
-```
-       MCP / dataframe op                 plan (typed IR)
-agent ─────────────────────► gateway ───────────────────────► rewriter
-                                  │                              │
-                                  ▼                              ▼
-                          biscuit verifier              Lean-extracted spec
-                                  │                              │
-                                  └────────► policy ◄────────────┘
-                                                  │
-                                                  ▼
-                                         DuckDB + Polars execution
-```
-
-## Policy
-
-A policy is a list of **column-grants** $\langle p, r, C \rangle$ —
-"principal $p$ may read columns $C$ on relation $r$". Multiple grants
-for the same $(p, r)$ are flat-unioned. Anything outside the union is
-denied — fail-closed.
-
-This is a deliberate narrowing of Cedar [@cedar2024]: column-level,
-not row-level; declarative, not predicate-rich. It buys us a small
-proof obligation. Row-level filtering is layered on top of the
-rewriter in the prototype but is not yet under proof
-(see §6).
-
-## Plan IR
+For §2 and §3 to be readable in one pass we state the IR up front:
 
 ```
 Plan ::= Scan(rel)
@@ -137,169 +87,248 @@ Plan ::= Scan(rel)
        | Filter(plan, col)
 ```
 
-The IR is single-relation by design: every operator preserves the
-touched relation, which lets the soundness proof reduce to a
-membership argument. Joins exist in the Rust impl as compositions of
-single-relation legs.
+`Project(p, cs)` keeps only `cs ∩ schema(p)`. `Filter(p, c)` is
+row-only — the column `c` is *read* by the predicate but does not
+appear in the output schema. This asymmetry is what makes the
+filter side-channel real.
+
+# Threat model
+
+We assume a trusted gateway holding the policy and the
+cryptographic root for capability tokens. Everything else is
+untrusted:
+
+| Component                                  | Trust | Notes                                                          |
+| ------------------------------------------ | :---: | -------------------------------------------------------------- |
+| LLM / agent (planner)                      |   ✗   | Jailbreakable; may emit hostile SQL / dataframe ops.            |
+| Tool-generated code                        |   ✗   | Indirect injection from retrieved context; supply chain.        |
+| Capability tokens [@biscuit]               |   ~   | Trusted *only* once the gateway verifies the signature.         |
+| Gateway process (Postern, this paper)      |   ✓   | TCB. Holds the Lean-verified rewriter and the policy.           |
+| **Catalog** (relation → columns map)       |   ✓   | TCB. Assumed bound to the physical Parquet schema (§6).         |
+| **Plan-to-executor lowering**              |   ✓   | TCB. We trust the rewritten plan is honoured literally by DuckDB. |
+| **Principal-string extraction from token** |   ✓   | TCB. A buggy biscuit verifier defeats every theorem below.      |
+| DuckDB + Parquet store                     |   ✓   | TCB.                                                            |
+
+**In-scope attacks the rewriter defeats.** (i) Over-projection of
+forbidden columns. (ii) Filter on a forbidden column (the
+`WHERE ssn = ?` side-channel — closed by
+`rewrite_filter_sound`). (iii) Scan of an un-attested relation
+(closed by `rewrite_refuses_unknown`). (iv) Cross-department reach
+by a principal with no matching grants. (v) Unknown principals
+(fail-closed: empty allow ⇒ empty schema).
+
+**Out of scope (paper §6).** Aggregation / inference attacks;
+covert channels through query latency or row counts; multi-relation
+joins; biscuit-token attenuation inside the proof; policy
+synthesis from natural language; the planner→executor lowering
+step.
+
+# Design
+
+Postern compiles a single policy artifact to plan-level enforcement.
+
+```mermaid
+flowchart LR
+  agent[LLM agent] -->|MCP plan + biscuit| gw{{Postern gateway}}
+  subgraph TCB
+    gw -->|verify| bc[biscuit verifier]
+    bc -->|principal| rw[Lean-extracted rewriter]
+    pol[(policy)] --> rw
+    cat[(catalog)] --> rw
+    rw -->|Option Plan| exe[DuckDB / Polars]
+  end
+  exe --> agent
+```
+
+## Policy
+
+A policy is a list of **column-grants** $\langle p, r, C \rangle$:
+"principal $p$ may read columns $C$ on relation $r$". Multiple
+grants for the same $(p, r)$ flat-union. Anything outside the
+union is denied — fail-closed. **No deny-lists**: the policy
+language is deliberately monotone grant-only, which makes policy
+review additive (a new grant can only widen). Deny-lists and
+attribute-based predicates are §6.
 
 ## Rewriter
 
-`rewrite cat P prin q` wraps `q` in a `Project` whose column list is
-the intersection of `q.schema cat` and `P.allowed prin q.touched`.
+```
+rewrite cat P prin q :=
+  if cat q.touched = [] then     none                          -- unknown relation
+  else if ¬ q.filterCols ⊆ allow then  none                    -- forbidden filter col
+  else
+    some (Project q (q.schema cat ∩ allow))
+  where allow := P.allowed prin q.touched
+```
+
 Post-hoc projection is the simplest algorithm that admits a clean
-soundness proof; more aggressive predicate-pushdown rewriters can be
-proved sound against this one as an oracle.
+soundness proof. Predicate-pushdown variants can be verified
+against this rewriter as a reference; we leave that to future work.
 
 # Formal model
 
-Mechanized in `verifier/lean/Postern.lean`. The three theorems are
-listed below; all are checked by `lake build` and the axiom set is
-audited by `CheckAxioms.lean`.
+Mechanized in `verifier/lean/Postern.lean`. Build with `lake build`;
+the per-theorem axiom set is reported by `CheckAxioms.lean`.
 
-**Theorem 1 (`rewrite_touched`).** For every `cat, P, prin, q`:
-`(rewrite cat P prin q).touched = q.touched`.
+**Theorem 1 (`rewrite_sound`).** If
+$\texttt{rewrite}\ cat\ P\ prin\ q = \texttt{some}\ q'$, then for
+every column $c$ in $q'\!.\texttt{schema}\ cat$,
+$c \in P.\texttt{allowed}\ prin\ q.\texttt{touched}$. *Every
+column appearing in the rewritten plan's output schema is one the
+policy permits.*
 
-**Theorem 2 (`rewrite_schema_subset`).** For every `cat, P, prin, q`
-and column `c`: if `c ∈ (rewrite cat P prin q).schema cat` then
-`c ∈ q.schema cat`. The rewriter can only remove columns, never
-fabricate them.
+**Theorem 2 (`rewrite_filter_sound`).** Under the same accept
+hypothesis, every column read by a `Filter` predicate inside $q'$
+is policy-allowed. **Closes the side-channel** in which a
+principal who cannot *read* `ssn` could still filter on it.
 
-**Theorem 3 (`rewrite_sound`, headline).** For every `cat, P, prin, q`
-and column `c`: if `c ∈ (rewrite cat P prin q).schema cat` then
-`c ∈ P.allowed prin q.touched`. Every column visible at the gateway
-boundary is one the policy permits.
+**Theorem 3 (`rewrite_schema_subset`)** and **Theorem 4
+(`rewrite_no_new_columns`).** The rewriter only ever removes
+columns — never invents them.
 
-`CheckAxioms.lean` reports the axiom dependencies:
+**Theorem 5 (`rewrite_idempotent`).** Rewriting twice admits the
+same column set. The rewriter is a closure operator on schemas.
 
-```
-'Postern.rewrite_touched'        does not depend on any axioms
-'Postern.rewrite_schema_subset'  depends on [propext, Quot.sound]
-'Postern.rewrite_sound'          depends on [propext, Quot.sound]
-```
+**Theorem 6 (`rewrite_monotone`).** If $P \subseteq P'$ (multiset
+inclusion on allowed columns), then the output schema under $P$ is
+contained in that under $P'$ — strengthening the policy can only
+widen the output.
 
-— i.e., only Lean 4's built-in axioms, no `sorry` and no
-user-supplied `axiom` declarations.
+**Theorem 7 (`rewrite_touched`).** `q'.touched = q.touched`.
+*Touched relation is preserved.*
 
-# Implementation and differential testing
+**Theorem 8 (`rewrite_refuses_unknown`).** `cat q.touched = []`
+implies `rewrite ... = none`. **An unknown relation is never a
+silently empty schema** — explicit refusal protects against
+catalog drift attacks.
 
-The Rust prototype (`prototype/crates/postern-core`) mirrors the Lean
-types and `rewrite` function literally. The differential harness
-(`postern-diff`) reads a JSON corpus emitted by `lake exe
-postern-corpus`, runs `postern_core::rewrite` on each
-`(catalog, policy, principal, plan)`, and asserts three equalities:
+**Theorem 9 (`rewrite_refuses_forbidden_filter`).** If
+`c ∈ q.filterCols` and `c ∉ allow`, then `rewrite ... = none`.
+Companion to Theorem 2.
 
-1. Rust output plan == Lean reference plan (structural).
-2. Output schema (Rust) == Lean reference schema.
-3. Touched relation (Rust) == Lean reference touched.
+`CheckAxioms.lean` reports per-theorem axiom dependencies. The set
+is bounded by `{propext, Quot.sound}` — Lean 4's built-in
+foundational axioms; two theorems (`rewrite_touched`,
+`rewrite_refuses_unknown`) depend on *no* axioms. There is no
+`sorry`, no user-supplied `axiom`.
 
-Current corpus is 10 cases (financial-institution scenario, §5);
-all 10 pass. Adding a case is a two-line edit in `Main.lean`; the
-Rust side requires no change because the same algorithm runs against
-the same JSON.
+# Implementation and conformance testing
 
-This is a weak form of code-extracted certified executable, picked
-deliberately over Lean→C/Rust extraction: a JSON corpus is the
-smallest interface that survives Lean and Rust release churn and is
-trivial to diff in CI.
+The Rust prototype (`prototype/crates/postern-core`) mirrors the
+Lean types and `rewrite` literally. The conformance harness
+(`postern-diff`) reads a JSON corpus from `lake exe postern-corpus`
+and asserts:
+
+1. Outcome kind (`accept` / `refuse`) matches.
+2. On accept: rewritten plan equals Lean's reference structurally;
+   so do `schema(cat)`, `filter_cols`, and `touched`.
+3. The input plan's `filter_cols` matches Lean's `Plan.filterCols`
+   (sanity-checks the IR helper independent of the rewriter).
+
+We chose JSON-corpus conformance over Lean → Rust extraction
+because the corpus interface is stable across compiler churn and
+surfaces divergence as a CI signal, not a build break.
+
+**Corpus shape.** 18 cases: 7 behavioural (the §5 demo), 4
+refusal regressions for known attacks, 7 policy-language edge
+cases (empty policy, duplicate grants, catalog-absent columns,
+case sensitivity, trailing-whitespace principal, nonexistent
+project column, nested Project narrowing). All 18 pass.
 
 # Demo: a financial institution with three departments
 
-Three principals (`CRM`, `CardOps`, `FraudRisk`) over the Kaggle
-`computingvictor/transactions-fraud-datasets` schema. Full policy and
-expected behaviour are in `scenarios/financial-institution/README.md`;
-here are the load-bearing rows:
+Kaggle `transactions-fraud-datasets`. Policy in
+`scenarios/financial-institution/policy.postern`; the load-bearing
+rows:
 
-| principal   | plan                                | rewritten output schema             |
-| ----------- | ----------------------------------- | ----------------------------------- |
-| `CRM`       | `Scan users_data`                   | `id, name, region, age`             |
-| `CRM`       | `Project [ssn, email]` over the above | `∅` (forbidden columns dropped)   |
-| `CardOps`   | `Scan users_data` (cross-dept)      | `∅`                                 |
-| `FraudRisk` | `Scan users_data`                   | `id, region`                        |
-| `Marketing` | `Scan users_data` (unknown principal) | `∅`                               |
+| principal   | plan                                | outcome             | rewritten schema                       |
+| ----------- | ----------------------------------- | ------------------- | -------------------------------------- |
+| `CRM`       | `Scan users_data`                   | accept              | `id, name, region, age`                |
+| `CRM`       | `Project [ssn,email]` over above    | accept              | `∅` (over-projection collapses)        |
+| `CRM`       | `Filter on ssn`                     | **refuse**          | —                                      |
+| `CardOps`   | `Scan users_data` (cross-dept)      | accept              | `∅` (no matching grant)                |
+| `FraudRisk` | `Scan users_data`                   | accept              | `id, region` (minimum-necessary)       |
+| `Marketing` | `Scan users_data` (unknown prin.)   | accept              | `∅` (empty allow)                      |
+| `CRM`       | `Scan credit_bureau_imports`        | **refuse**          | — (unknown relation)                   |
 
-Each row is an entry in the differential corpus.
+Each row is a corpus case; "refuse" rows exercise Theorems 8 / 9.
 
 # Related work
 
-**Cedar** [@cedar2024] proves authorization-decision soundness for
-per-call API authorization, also in Lean. Postern targets *query
-rewriting* rather than decision functions: the policy survives into
-the executed plan, not just into a yes/no on a request. We borrow
-Cedar's stance on a small denotational core but specialize the
-surface to column grants.
+No prior system, to our knowledge, proves soundness of a
+plan-level rewriter for an LLM-agent-facing lakehouse. The closest
+landmarks:
 
-**SEAL** [@seal2023] gives capability-based control over analytic
-workloads with an enforcement runtime; the policy core itself is
-unverified. Postern flips the balance — verified policy core, lighter
-runtime — and pairs it with biscuit [@biscuit] for the capability
-distribution layer.
-
-**Jeeves / Jacqueline** [@jeeves2012; @jacqueline2016] enforce IFC in
-ORM-backed apps via a faceted-value runtime; they predate the
-LLM-agent threat model and have no Lean artifact.
-
-**Postgres RLS** [@rls-postgres] and **OPA / Rego** [@opa-rego] are
-the deployed baselines. RLS is per-database and lacks formal
-guarantees beyond `EXPLAIN`; OPA is general-purpose but does not
-reason about query outputs. Postern's contribution is a *verified*
-plan-level rewriter for the lakehouse setting.
-
-**Object-capability SQL** [@ocsql2023] makes dangerous queries
-inexpressible by construction; we view it as a complementary
-defence-in-depth layer rather than a replacement.
+- **Cedar** [@cedar2024] proves authorization-decision soundness
+  for per-call API authorization, also in Lean. The axis is
+  different: Cedar verifies "may this principal call read?",
+  Postern verifies "is the dataframe the executor sees contained
+  in what the policy permits?".
+- **SEAL** [@seal2023] gives capability-based enforcement at
+  runtime; the policy core itself is unverified. Postern is the
+  inverse — verified policy core, lighter runtime — and pairs with
+  biscuit [@biscuit] for capability distribution.
+- **Jeeves / Jacqueline** [@jeeves2012; @jacqueline2016] and the
+  faceted-execution line [@faceted-haskell] enforce IFC in ORM-
+  backed apps via a heavyweight faceted-value runtime. They
+  predate the LLM-agent threat model and ship no Lean artifact.
+- **Postgres RLS** [@rls-postgres] and **OPA / Rego** [@opa-rego]
+  are the deployed baselines. RLS is per-database with no formal
+  guarantee beyond `EXPLAIN`; OPA is general-purpose but does not
+  reason about query outputs.
+- **AgentDojo** [@agentdojo2024] and **CaMeL** [@camel2025] argue
+  for capability-flow defences against indirect prompt injection
+  at the *agent* layer. Postern is the complementary lake-side
+  enforcement point.
 
 # Open challenges and future work
 
-1. **Joins under proof.** The Lean spec is single-relation; the Rust
-   impl supports joins by per-leg rewriting but does not prove
-   schema-soundness across them. The natural next theorem is
-   `rewrite_sound_join`: for `q = Join(q₁, q₂)`, every column of the
-   rewritten join belongs to one of the per-leg allowed sets.
+The Lean spec is narrow on purpose. Three load-bearing extensions
+remain.
 
-2. **Filter side-channels.** `Filter(p, col)` does not include `col`
-   in the output schema, but the *predicate* still reads it. A
-   principal who cannot read `ssn` can still ask
-   "rows where `ssn = 'X'`" and observe row counts. We currently
-   leave this open; one mitigation is to require predicate columns to
-   appear in the allowed set, which we believe is straightforwardly
-   provable.
+1. **Joins under proof.** The IR is single-relation; the Rust impl
+   handles joins by per-leg rewriting but is not under proof. The
+   natural next theorem is
+   `rewrite_sound_join`: for `Join(q₁, q₂)`, the rewritten output
+   columns are contained in the union of per-leg allowed sets. The
+   hard case is the join-key leak — joining on `ssn` without
+   projecting it mirrors the filter side-channel and needs the
+   same join-key-coverage condition.
 
-3. **Aggregation and differential privacy.** A principal may be
-   allowed `SUM(amount)` but not individual rows. Lifting the
-   rewriter to aggregations is open; SEAL and IFC-for-ML
-   [@seal2023; @ifc-ml] are the closest reference points.
+2. **Aggregation, with a differential-privacy boundary.** A
+   principal may be allowed `SUM(amount)` without individual-row
+   visibility. Lifting the rewriter to aggregations is open; SEAL
+   and the faceted line [@seal2023; @faceted-haskell] are the
+   closest reference points.
 
-4. **Policy synthesis from natural language.** The MCP frontend lets
-   agents propose policy edits in natural language; the Lean spec
-   then synthesises the policy artifact and verifies preservation
-   against an existing access log. This is genuinely
-   secure-program-synthesis territory and the natural follow-up
-   project.
-
-5. **Cross-system capability passing.** Biscuit tokens can chain
-   attenuations, but the Lean spec currently sees a flat principal
-   string. Modelling attenuated capabilities inside the proof is open
-   and lines up with the SEAL line of work [@seal2023].
+3. **Biscuit attenuation inside the proof.** The current Lean
+   spec sees a flat `principal : String`. Modelling biscuit's
+   Datalog-based attenuation, expiry, and audience checks inside
+   the proof lifts the principal-string-extraction row out of the
+   TCB. Catalog integrity, plan integrity in transit, and NL →
+   policy synthesis are further out but the same shape.
 
 # Reproducibility
 
 ```
-verifier/lean/   # Lean 4 spec + theorems + corpus emitter
-prototype/       # Rust workspace: postern-core, postern-diff
-scenarios/       # Financial-institution case study
-paper/           # This document
+verifier/lean/   Lean 4 spec + theorems + corpus emitter
+prototype/       Rust workspace: postern-core, postern-diff
+scenarios/       Financial-institution case study
+paper/           This document
+scripts/         reproduce.sh — chains everything
 ```
 
-Build:
+Toolchains: **Lean 4.29.1** (pinned in `verifier/lean/lean-toolchain`),
+**Rust stable** (tested 1.93). Single command:
 
 ```sh
-cd verifier/lean && lake build && lake exe postern-corpus \
-  > ../../prototype/corpus/postern-corpus.json
-cd ../../prototype && cargo test --workspace \
-  && cargo run -p postern-diff -- corpus/postern-corpus.json
+scripts/reproduce.sh
 ```
 
-Expected output: `10/10 cases pass (Lean reference == Rust impl)`.
+Expected output ends with
+`18/18 cases pass (Lean reference == Rust impl)` and an axiom
+audit showing only `propext` and `Quot.sound`. Runs in under
+two minutes on an M-series Mac on a warm cache.
 
 # References
 
