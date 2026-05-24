@@ -37,3 +37,12 @@ paper/*.log
 # Editor
 .vscode/
 .idea/
+
+# Claude Code local state
+.claude/
+
+# Astro / web (web/ has its own .gitignore for build outputs)
+web/node_modules/
+web/dist/
+web/.astro/
+web/src/wasm/
