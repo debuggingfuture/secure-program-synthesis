@@ -5,16 +5,22 @@
 Research artifact for Track 3 of the [Apart Research Secure Program
 Synthesis Hackathon, 2026-05-22 → 2026-05-24](https://apartresearch.com/sprints/secure-program-synthesis-hackathon-2026-05-22-to-2026-05-24).
 
-LLM agents read their context out of a single DuckDB-over-Parquet
-lakehouse fed by Airbyte / mem0-style retrieval. Where Slack
-channel ACLs, Salesforce field-level security, and Stripe customer-
-scoped tokens used to gate each upstream, the lake holds all three
-behind one DuckDB service-account role — an agent that can query
-the lake inherits the *union* of those permissions, not the
-intersection. Postern is a small policy DSL + plan rewriter that
-sits between agents and the lake, with the **rewriter's correctness
-mechanized in Lean 4** and a Rust implementation conformance-tested
-against the Lean reference.
+**Problem.** Per-source authorization is non-compositional under
+ETL fusion. When $n$ heterogeneous sources are materialized into a
+single columnar lakehouse, the per-source guards (channel ACLs,
+field-level security, OAuth-scoped tokens) have no representative
+in the lake's authorization surface, and the effective permission
+of a query-issuing agent becomes the *union* of the upstream
+principals rather than the *intersection* under the querying
+identity.
+
+**Solution.** Postern mediates every read at the plan boundary
+against a column-grant policy. Its core — Plan IR, policy DSL,
+rewriter — is **mechanized in Lean 4**, with nine `sorry`-free
+theorems certifying that every accepted plan's output schema *and*
+filter-predicate read-set are contained in the policy-allowed
+columns. A Rust implementation mirrors the algorithm and is
+conformance-tested against the Lean reference (18 / 18 cases).
 
 ## What's in the box
 

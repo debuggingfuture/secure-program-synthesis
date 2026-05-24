@@ -4,12 +4,15 @@ subtitle: "Secure Program Synthesis Hackathon 2026 — Track 3 research artifact
 author:
   - name: FractalBox
 abstract: |
-  Agentic context now lives in a single lakehouse — DuckDB over
-  Parquet on S3, fed by Airbyte / mem0-style retrieval — and the
-  authorisation primitives that gated each upstream
-  (Slack channel ACLs, Salesforce field-level security, Stripe
-  customer-scoped tokens) collapse into one DuckDB service-account
-  role at ingest. **Postern** is a verified gateway that rewrites every
+  Per-source authorization is *non-compositional* under ETL
+  fusion: when $n$ heterogeneous sources are materialised into a
+  single columnar lakehouse, the per-source guards (channel ACLs,
+  field-level security, OAuth-scoped tokens) have no representative
+  in the lake's authorization surface, and the effective permission
+  of a query-issuing agent becomes the *union* of the upstream
+  principals rather than the *intersection* under the querying
+  identity. **Postern** closes this gap at the plan boundary: a
+  verified gateway that rewrites every
   dataframe plan against a column-grant policy before it reaches the
   executor. The core — Plan IR, policy, rewriter — is mechanized in
   Lean 4 with nine `sorry`-free theorems, including
@@ -41,16 +44,22 @@ Airbyte-style ETL and long-term memory services [@mem0].
 MCP tools [@mcp] — rather than receiving rows hand-picked by a human
 analyst.
 
-The result is a concrete authorisation collapse. A 2024 deployment
-might hold Slack threads behind channel ACLs, Salesforce contacts
-behind field-level security, and Stripe charges behind customer-
-scoped API tokens; the 2026 deployment lands all three in one
-Parquet bucket queried by a single DuckDB service account, with no
-remaining channel / field / customer boundary. An agent that can
-issue a query inherits the *union* of the three upstreams'
-permissions, not the intersection — and the lake-side IAM role is
-the only thing standing between an indirect-prompt-injected agent
-and the merged dataset.
+Stated as a property gap: per-source authorization is
+non-compositional with respect to ETL fusion. For sources
+$S_1, \ldots, S_n$ with access-control denotations
+$A_1, \ldots, A_n$, the materialized lakehouse $L = \bigcup_i S_i$
+has authorization denotation $A_L$ determined by the ingest
+service-account's IAM role alone; the originals $\{A_i\}$ have no
+semantic representative in $A_L$. The effective permission of an
+agent issuing a plan against $L$ is therefore the *union* of
+upstream principals' permissions, not the *intersection* under the
+querying identity — and the lake-side IAM role is the sole
+boundary between an indirect-prompt-injected agent and the merged
+dataset. *Concretely:* a 2024 deployment might hold Slack threads
+behind channel ACLs, Salesforce contacts behind field-level
+security, and Stripe charges behind customer-scoped API tokens; in
+the 2026 deployment all three land in one Parquet bucket queried
+by a single DuckDB service account.
 
 This paper restores that boundary by inserting a verified gateway
 between agents and the lake. The gateway holds a single policy

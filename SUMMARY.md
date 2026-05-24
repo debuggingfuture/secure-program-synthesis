@@ -1,6 +1,6 @@
 # Postern — 10-line summary
 
-1. **Problem.** Airbyte writes Slack threads, Salesforce contacts, and Stripe charges into one Parquet bucket — channel ACLs, field-level security, and customer-scoped tokens collapse into a single DuckDB service-account role, and the querying agent inherits the *union* of those permissions.
+1. **Problem.** Per-source authorization is *non-compositional* under ETL fusion: when heterogeneous sources are materialized into a single lakehouse, per-source guards (channel ACLs, field-level security, OAuth scopes) have no representative in the lake's authorization surface, so the querying agent inherits the *union* of upstream permissions rather than the *intersection* under its own identity.
 2. **Thesis.** Insert a verified gateway that *rewrites* every plan against a small column-grant policy; agents and their generated SQL stay untrusted.
 3. **Lean 4 spec.** `Plan = Scan | Project | Filter`, column-grant `Policy`, `rewrite : ... → Option Plan` with explicit refusals.
 4. **Headline theorems.** `rewrite_sound` (output-column ⊆ allowed) and `rewrite_filter_sound` (predicate-column ⊆ allowed) — the latter closes the `WHERE ssn = ?` side-channel.
