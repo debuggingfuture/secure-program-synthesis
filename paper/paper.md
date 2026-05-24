@@ -87,15 +87,25 @@ harness binding the two.
 ## Contributions
 
 1. A Plan IR ($\mathit{Scan}$/$\mathit{Project}$/$\mathit{Filter}$),
-   a column-grant policy language, and a rewriter, mechanised in
-   Lean~4 [@lean4]. The development comprises nine
-   `sorry`-free theorems: output-column soundness, filter-predicate
-   soundness, schema subset, idempotence under repeated
-   application, monotonicity in the policy, two no-new-column
-   lemmas, and explicit-refusal lemmas for unknown relations and
-   for filter predicates over forbidden columns (§4). Axiom
-   dependencies are audited per theorem and bounded by `propext`
-   and `Quot.sound`; two theorems depend on none.
+   a Biscuit-Datalog policy language (Horn-fragment with ground
+   `right(p, r, c)` facts compiled from the surface column-grant
+   syntax), and a rewriter, mechanised in Lean~4 [@lean4]. The
+   rewriter side comprises nine `sorry`-free theorems:
+   output-column soundness, filter-predicate soundness, schema
+   subset, idempotence under repeated application, monotonicity
+   in the policy, two no-new-column lemmas, and explicit-refusal
+   lemmas for unknown relations and for filter predicates over
+   forbidden columns (§4). The Datalog evaluator
+   (`verifier/lean/Datalog.lean`) contributes a further
+   `eval_monotone` theorem (proved modulo one isolated combinatorial
+   obligation, `herbrandBound_mono`) plus four `sorry`-free
+   specialisation lemmas covering the rule-free regime that all
+   our scenarios use today. Two further evaluator meta-theorems —
+   `eval_sound` and `eval_terminates` — are stated with
+   `sorryAx` obligations named explicitly in `CheckAxioms.lean`.
+   Axiom dependencies for proved declarations are bounded by
+   `propext` and `Quot.sound`; two rewriter theorems depend on
+   none.
 
 2. A Rust capability-tracking layer (`postern-guardrail`)
    implementing three composable mechanisms: sealed
@@ -114,10 +124,15 @@ harness binding the two.
    reference-conformance harness (`postern-diff`) that asserts
    byte-equivalence between the Rust output and the Lean
    reference on a corpus of 18 hand-curated cases (15 accept, 3
-   refusal). We label the procedure *reference-conformance
-   testing* rather than QuickCheck-style differential testing,
-   reserving the latter term for property-based generation; the
-   latter is among the open problems of §6.
+   refusal). The gateway's Datalog evaluation surface is designed
+   around `biscuit-auth`'s public `biscuit_auth::datalog::World`
+   evaluator [@biscuit]; the in-tree `postern-core` migration to
+   that backend is in progress, with the column-grant DSL serving
+   as the byte-equivalent stand-in until the migration lands.
+   We label the procedure *reference-conformance testing* rather
+   than QuickCheck-style differential testing, reserving the
+   latter term for property-based generation; the latter is
+   among the open problems of §6.
 
 4. A case study over the Kaggle `transactions-fraud-datasets`
    schema, with three principals (CRM, Card Operations, Fraud
@@ -382,11 +397,29 @@ $\mathit{rewrite}\ \mathit{cat}\ P\ p\ q = \mathit{none}$. The
 contrapositive of Theorem 2.
 
 `CheckAxioms.lean` audits the axiom dependencies of each theorem.
-The set is bounded by $\{\texttt{propext}, \texttt{Quot.sound}\}$,
-Lean~4's foundational axioms; the proofs of `rewrite_touched` and
-`rewrite_refuses_unknown` depend on no axioms. No proof uses
-`sorry`, and no user-supplied `axiom` declarations are
-introduced.
+For the rewriter side (Theorems 1–9) the set is bounded by
+$\{\texttt{propext}, \texttt{Quot.sound}\}$, Lean~4's
+foundational axioms; the proofs of `rewrite_touched` and
+`rewrite_refuses_unknown` depend on no axioms, and no proof
+uses `sorry`.
+
+**Datalog evaluator (`verifier/lean/Datalog.lean`).** The policy
+language is mechanised independently. Eight supporting
+list-membership lemmas (`step_extensive`, `allMatches_subset_facts`,
+the joint `step_subset`, `iterate_succ_extensive`, `iterate_subset_le`,
+`iterate_subset_program`) are proved without `sorry`. Four
+specialisation lemmas (`step_no_rules`, `iterate_no_rules`,
+`eval_no_rules`, `eval_fact_mem`) cover the rule-free regime
+the financial-institution scenario uses today; they give an
+unconditional soundness direction for ground-fact policies and
+depend only on `propext`. The headline `eval_monotone` is
+proved modulo one isolated combinatorial obligation,
+`herbrandBound_mono` (a length-after-`eraseDups` arithmetic
+argument with no semantic content). Two further meta-theorems,
+`eval_sound` and `eval_terminates`, are stated with `sorryAx`
+obligations named explicitly in the audit so the residual proof
+surface is visible at CI time. The corresponding open problems
+are listed in §6.
 
 # Implementation and conformance testing
 
@@ -405,6 +438,19 @@ JSON-corpus conformance is preferred to Lean-to-Rust extraction
 on the grounds that the corpus interface is stable across
 compiler-version churn in both languages and that divergence
 manifests as a CI failure rather than a build failure.
+
+**Datalog backend.** The gateway is designed to evaluate
+policies through `biscuit-auth`'s public `biscuit_auth::datalog`
+module — `World::new()`, `add_fact`, `add_rule`, `run`,
+`query_match` — which is the same evaluator used inside the
+production token-verification surface, only without the
+token-handling layers we put out of scope (§6). The in-tree
+`postern-core` migration to this backend is in progress; the
+column-grant DSL serves as a byte-equivalent stand-in until the
+migration lands. A second conformance corpus, exercising Lean
+`eval` against `biscuit_auth::datalog::World` directly, is the
+natural pair for the rewriter corpus and is queued as the next
+work item.
 
 The corpus comprises 18 cases: seven behavioural cases drawn
 from the financial-institution scenario of §5, four refusal
@@ -461,8 +507,16 @@ provides capability-based access control for analytic
 workloads at the runtime level; the policy core is not
 mechanically verified. Our development is the dual: the policy
 core is verified, and the runtime is correspondingly lighter.
-Biscuit [@biscuit] provides the deployed capability-token
-distribution mechanism we assume on the front end.
+Biscuit [@biscuit] is both the deployed capability-token
+distribution mechanism we assume on the front end *and* the
+policy-language layer we mechanise: the Horn fragment of its
+Datalog dialect underpins our policy semantics, and the
+production-grade `biscuit-auth` Rust crate is the gateway's
+runtime evaluator (`biscuit_auth::datalog::World`). Block
+attenuation, audience, expiry, and key rotation are explicit
+out-of-scope items (§6); the column-grant surface syntax
+compiles to ground `right(principal, relation, column)` Datalog
+facts in the in-scope fragment.
 
 *Information-flow control for database-backed applications.*
 Jeeves [@jeeves2012], Jacqueline [@jacqueline2016], and the
