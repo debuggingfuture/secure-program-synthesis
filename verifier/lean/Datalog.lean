@@ -390,13 +390,66 @@ theorem iterate_subset_program
       have := step_subset R R' (iterate R F n) (iterate R' F' n) hR hSubset a h'
       exact this
 
+/-! ## Useful specialised lemmas
+
+  Two small results that hold without `sorry` and cover the
+  motivating examples (financial-institution case study). They
+  also serve as warm-up lemmas in the direction of `eval_sound`
+  and `eval_terminates`. -/
+
+/-- Every starting fact survives evaluation. Useful baseline:
+    `Program.allowed prin rel` is *at least* the ground
+    `right(prin, rel, _)` facts. -/
+theorem eval_fact_mem (P : Program) (a : Atom) (h : a ∈ P.facts) :
+    a ∈ eval P := by
+  show a ∈ iterate P.rules P.facts P.herbrandBound
+  induction P.herbrandBound with
+  | zero => exact h
+  | succ k ih => exact iterate_succ_extensive _ _ _ _ ih
+
+/-- With no rules, every iteration of `step` is fact-preserving:
+    `step [] F` has the same mem-set as `F`. -/
+theorem step_no_rules (F : List Atom) (a : Atom) :
+    a ∈ step [] F ↔ a ∈ F := by
+  constructor
+  · intro h
+    unfold step at h
+    rw [List.mem_append] at h
+    cases h with
+    | inl hL => exact hL
+    | inr hR => exact (List.not_mem_nil hR).elim
+  · intro hF
+    exact step_extensive [] F a hF
+
+/-- With no rules, iteration is fact-preserving at every depth.
+    Captures the LFP for our motivating examples (all
+    `right(_,_,_)` ground facts; no derivation rules). -/
+theorem iterate_no_rules (F : List Atom) (n : Nat) (a : Atom) :
+    a ∈ iterate [] F n ↔ a ∈ F := by
+  induction n with
+  | zero => exact Iff.rfl
+  | succ k ih =>
+      show a ∈ step [] (iterate [] F k) ↔ a ∈ F
+      rw [step_no_rules]
+      exact ih
+
+/-- For rule-free programs, `eval P` is mem-equivalent to `P.facts`.
+    Special case of `eval_sound` for the ground-fact policies
+    (financial-institution case study, default Postern usage). -/
+theorem eval_no_rules (P : Program) (h : P.rules = []) (a : Atom) :
+    a ∈ eval P ↔ a ∈ P.facts := by
+  show a ∈ iterate P.rules P.facts P.herbrandBound ↔ a ∈ P.facts
+  rw [h]
+  exact iterate_no_rules P.facts P.herbrandBound a
+
 /-! ## Theorems
 
   Headline obligations stated in the file comment. `eval_monotone`
   is fully proved below modulo `herbrandBound_mono` (combinatorial
   cardinality lemma — see comment). `eval_sound` and
   `eval_terminates` are stated; full proofs are tracked as
-  separate work items. -/
+  separate work items. The `_no_rules` specialisation above
+  delivers the soundness direction for the rule-free case. -/
 
 /-- Monotonicity of the Herbrand bound. Stated separately so its
     combinatorial nature (length-after-eraseDups arithmetic) is

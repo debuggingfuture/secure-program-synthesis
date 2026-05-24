@@ -31,6 +31,18 @@ import Datalog
       'iterate_subset_le'                     depends on [propext]
       'iterate_subset_program'                depends on [propext, Quot.sound]
 
+    Datalog rule-free specialisation (Datalog.lean — all `sorry`-free):
+      'eval_fact_mem'                         depends on [propext]
+      'step_no_rules'                         depends on [propext]
+      'iterate_no_rules'                      depends on [propext]
+      'eval_no_rules'                         depends on [propext]
+
+    These four cover the motivating-examples regime (financial-
+    institution scenario uses ground `right(_,_,_)` facts only,
+    no derivation rules). For that regime `eval P` is mem-set-
+    equivalent to `P.facts`, which gives the soundness direction
+    unconditionally — a useful baseline pending the full proofs.
+
     Datalog headline theorems:
       'eval_monotone'        depends on [propext, sorryAx, Quot.sound]
                              -- sorryAx is via herbrandBound_mono only;
@@ -70,6 +82,12 @@ import Datalog
 #print axioms Postern.Datalog.iterate_succ_extensive
 #print axioms Postern.Datalog.iterate_subset_le
 #print axioms Postern.Datalog.iterate_subset_program
+-- Rule-free specialisation (covers the motivating examples) — all proved.
+#print axioms Postern.Datalog.eval_fact_mem
+#print axioms Postern.Datalog.step_no_rules
+#print axioms Postern.Datalog.iterate_no_rules
+#print axioms Postern.Datalog.eval_no_rules
+-- Headline theorems (open obligations isolated as `sorryAx`).
 #print axioms Postern.Datalog.eval_monotone
 #print axioms Postern.Datalog.herbrandBound_mono
 #print axioms Postern.Datalog.eval_sound
