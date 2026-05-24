@@ -5,6 +5,16 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+default = []
+# Use `biscuit-auth`'s public Datalog evaluator
+# (`biscuit_auth::datalog::World`) for `Policy::allowed_via_biscuit`.
+# Off by default so the WASM crate stays slim; enable in tests and
+# eventually as the gateway-side default once the migration is
+# complete (paper §6 follow-up).
+datalog-biscuit = ["dep:biscuit-auth"]
+
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
+biscuit-auth = { version = "6", optional = true }

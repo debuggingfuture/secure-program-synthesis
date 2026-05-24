@@ -21,6 +21,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+#[cfg(feature = "datalog-biscuit")]
+pub mod datalog_biscuit;
+
 /// Identifier for a principal (e.g. a department or service-account).
 pub type Principal = String;
 /// Relation (table) name.
