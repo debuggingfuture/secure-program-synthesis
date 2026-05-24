@@ -332,18 +332,9 @@ pub mod gateway {
     /// or filter on a forbidden column — closed by Lean theorems
     /// `rewrite_refuses_unknown` and
     /// `rewrite_refuses_forbidden_filter`).
-    pub fn with_plan<R, F>(
-        cat: &Catalog,
-        pol: &Policy,
-        prin: &str,
-        plan: &Plan,
-        f: F,
-    ) -> Option<R>
+    pub fn with_plan<R, F>(cat: &Catalog, pol: &Policy, prin: &str, plan: &Plan, f: F) -> Option<R>
     where
-        F: for<'sc> FnOnce(
-            Cap<'sc, AllowedColumns>,
-            Tagged<'sc, Plan, AllowedColumns>,
-        ) -> R,
+        F: for<'sc> FnOnce(Cap<'sc, AllowedColumns>, Tagged<'sc, Plan, AllowedColumns>) -> R,
         R: 'static,
     {
         let rewritten = rewrite(cat, pol, prin, plan)?;
@@ -362,18 +353,11 @@ mod tests {
     struct Demo;
 
     fn cat() -> Catalog {
-        Catalog::from_entries([(
-            "users_data",
-            vec!["id", "name", "email", "ssn", "region"],
-        )])
+        Catalog::from_entries([("users_data", vec!["id", "name", "email", "ssn", "region"])])
     }
 
     fn pol() -> Policy {
-        Policy::from_grants([Grant::new(
-            "CRM",
-            "users_data",
-            ["id", "name", "region"],
-        )])
+        Policy::from_grants([Grant::new("CRM", "users_data", ["id", "name", "region"])])
     }
 
     #[test]
@@ -422,9 +406,7 @@ mod tests {
             &pol(),
             "CRM",
             &Plan::scan("users_data"),
-            |cap, tagged_plan| {
-                sinks::to_llm(cap, tagged_plan, |p| format!("{p:?}"))
-            },
+            |cap, tagged_plan| sinks::to_llm(cap, tagged_plan, |p| format!("{p:?}")),
         )
         .expect("CRM scan accepted");
         assert!(ack.bytes > 0);
@@ -439,9 +421,7 @@ mod tests {
             &pol(),
             "CRM",
             &Plan::scan("payroll_data"),
-            |_cap, _t| -> sinks::LlmAck {
-                panic!("closure must not run when rewriter refuses")
-            },
+            |_cap, _t| -> sinks::LlmAck { panic!("closure must not run when rewriter refuses") },
         );
         assert!(result.is_none());
     }
