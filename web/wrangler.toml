@@ -1,0 +1,20 @@
+# Cloudflare Pages config for the Postern artifact site.
+#
+# `wrangler pages deploy dist` reads this to know the project name
+# and pages compatibility flags. The build itself runs from
+# `package.json` scripts (`pnpm build` → `astro build`), not from
+# wrangler — Cloudflare Pages can also build at the platform side, but
+# this repo prefers `wrangler pages deploy` so deploys are auditable
+# from CI logs.
+#
+# Project name is a placeholder; rename via:
+#   wrangler pages project rename postern-web <new-name>
+# Default deploy URL is then https://<new-name>.pages.dev.
+
+name = "postern-web"
+pages_build_output_dir = "dist"
+compatibility_date = "2026-05-25"
+
+# When/if we want to attach a custom domain (e.g. postern.fractalbox.dev or
+# postern.openhackers.club), configure via:
+#   wrangler pages project domain add postern-web <hostname>
