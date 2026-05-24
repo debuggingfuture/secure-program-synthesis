@@ -20,7 +20,8 @@ lakefile.olean
 *.olean
 *.ilean
 *.hash
-verifier/lean/lake-manifest.json
+# lake-manifest.json IS committed — lean-action requires it on a
+# clean checkout, and pinning lockfile state matches Cargo.lock.
 
 # Rust
 prototype/target/
