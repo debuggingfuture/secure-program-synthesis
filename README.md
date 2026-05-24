@@ -6,12 +6,15 @@ Research artifact for Track 3 of the [Apart Research Secure Program
 Synthesis Hackathon, 2026-05-22 → 2026-05-24](https://apartresearch.com/sprints/secure-program-synthesis-hackathon-2026-05-22-to-2026-05-24).
 
 LLM agents read their context out of a single DuckDB-over-Parquet
-lakehouse fed by Airbyte / mem0-style retrieval. The per-source RBAC
-that protected each upstream SaaS does not survive the lake boundary.
-Postern is a small policy DSL + plan rewriter that sits between
-agents and the lake, with the **rewriter's correctness mechanized in
-Lean 4** and a Rust implementation conformance-tested against the
-Lean reference.
+lakehouse fed by Airbyte / mem0-style retrieval. Where Slack
+channel ACLs, Salesforce field-level security, and Stripe customer-
+scoped tokens used to gate each upstream, the lake holds all three
+behind one DuckDB service-account role — an agent that can query
+the lake inherits the *union* of those permissions, not the
+intersection. Postern is a small policy DSL + plan rewriter that
+sits between agents and the lake, with the **rewriter's correctness
+mechanized in Lean 4** and a Rust implementation conformance-tested
+against the Lean reference.
 
 ## What's in the box
 

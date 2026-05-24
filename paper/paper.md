@@ -5,9 +5,11 @@ author:
   - name: FractalBox
 abstract: |
   Agentic context now lives in a single lakehouse — DuckDB over
-  Parquet on S3, fed by Airbyte / mem0-style retrieval — but the
-  per-source RBAC that protected each upstream SaaS dies at the lake
-  boundary. **Postern** is a verified gateway that rewrites every
+  Parquet on S3, fed by Airbyte / mem0-style retrieval — and the
+  authorisation primitives that gated each upstream
+  (Slack channel ACLs, Salesforce field-level security, Stripe
+  customer-scoped tokens) collapse into one DuckDB service-account
+  role at ingest. **Postern** is a verified gateway that rewrites every
   dataframe plan against a column-grant policy before it reaches the
   executor. The core — Plan IR, policy, rewriter — is mechanized in
   Lean 4 with nine `sorry`-free theorems, including
@@ -37,8 +39,18 @@ lakehouse (DuckDB over Parquet on S3 [@duckdb]) populated by
 Airbyte-style ETL and long-term memory services [@mem0].
 **Second**, agents *issue* the dataframe query themselves — through
 MCP tools [@mcp] — rather than receiving rows hand-picked by a human
-analyst. As query cost drops, so does the per-source authorization
-boundary.
+analyst.
+
+The result is a concrete authorisation collapse. A 2024 deployment
+might hold Slack threads behind channel ACLs, Salesforce contacts
+behind field-level security, and Stripe charges behind customer-
+scoped API tokens; the 2026 deployment lands all three in one
+Parquet bucket queried by a single DuckDB service account, with no
+remaining channel / field / customer boundary. An agent that can
+issue a query inherits the *union* of the three upstreams'
+permissions, not the intersection — and the lake-side IAM role is
+the only thing standing between an indirect-prompt-injected agent
+and the merged dataset.
 
 This paper restores that boundary by inserting a verified gateway
 between agents and the lake. The gateway holds a single policy
