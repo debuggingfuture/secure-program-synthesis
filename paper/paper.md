@@ -47,40 +47,31 @@ keywords:
 # Introduction
 
 Production agentic systems increasingly read context from
-data-lakehouse stores at inference time. The pattern is to
-compact heterogeneous institutional sources into engine-agnostic
-columnar formats — typically Apache Arrow Parquet on S3-class
-object storage — and query them with in-process analytical
-engines such as DuckDB [@duckdb], often co-located with on-prem
-or edge runtimes hosting local models. The access-control
-consequence is sharp: the entity issuing SQL or
-dataframe queries against the lakehouse is no longer a human
-analyst on a stable role, but an LLM agent mediated by tool-call
-protocols such as the Model Context Protocol [@mcp], and
-demonstrably susceptible to indirect prompt injection
-[@agentdojo2024; @camel2025]. Agent access patterns are
-short-term, contextual, and task-oriented; role-based access
-control — including its temporally-scoped variant TRBAC — does
-not scale to this shape. Two responses dominate current
-deployments, and each accepts a substantial limitation.
-Row- and column-level security in ACID-class databases such as
-PostgreSQL [@rls-postgres] binds authorization predicates to
-relations within a single engine, so the policies do not survive
-ETL into an engine-agnostic Parquet store; reconstructing them
-externally demands per-source policy duplication that scales
-poorly with source count and policy churn. The deployed
-alternative — physical tenant segregation across object-storage
-prefixes queried by disjoint engine instances — enforces the
-per-source perimeter by absence, forfeiting the cross-source
-joins that motivate the lakehouse to begin with. Neither offers
-a compositional authorization guarantee over heterogeneous
-ingest: when channel ACLs, field-level security, and
-customer-scoped tokens collapse to a single ingest IAM role at
-materialisation, an indirect-prompt-injected agent inherits the
-*union* of the upstream principals' permissions rather than the
-*intersection* under the querying identity. We propose
-plan-level rewriting against a column-grant policy as a third
-point in this design space. **Postern**, the artifact we
+data-lakehouse stores at inference time, compacting
+heterogeneous sources into engine-agnostic columnar formats —
+Apache Arrow Parquet on S3-class object storage — queried by
+in-process engines such as DuckDB [@duckdb], often co-located
+with on-prem or edge runtimes hosting local models. The
+access-control consequence is sharp: the entity issuing queries
+is no longer a human analyst on a stable role but an LLM agent
+mediated by tool-call protocols such as the Model Context
+Protocol [@mcp]. Agent access is short-term, contextual, and
+task-oriented; role-based access control — and its
+temporally-scoped variant TRBAC — does not fit. Two existing
+responses each concede something. Per-engine row- and
+column-level security [@rls-postgres] does not survive ETL into
+an engine-agnostic Parquet store, forcing per-source policy
+duplication that scales poorly with source count and churn.
+Physical tenant segregation across object-storage prefixes
+queried by disjoint engines restores safety but forfeits the
+cross-source joins that motivate the lakehouse in the first
+place. Neither composes: when channel ACLs, field-level
+security, and customer-scoped tokens collapse to a single ingest
+IAM role at materialisation, an indirect-prompt-injected agent
+inherits the *union* of the upstream principals' permissions
+rather than the *intersection* under its querying identity. We
+propose plan-level rewriting against a column-grant policy as a
+third point in this design space. **Postern**, the artifact we
 present, has three components: a Lean~4-mechanised plan
 rewriter, a Rust capability-tracking layer constraining the
 agent's downstream computation, and a reference-conformance
@@ -208,6 +199,24 @@ union is denied — fail-closed. **No deny-lists**: the policy
 language is deliberately monotone grant-only, which makes policy
 review additive (a new grant can only widen). Deny-lists and
 attribute-based predicates are §6.
+
+A concrete policy from the financial-institution scenario of §5,
+in Postern's surface syntax:
+
+```text
+grant CRM       on users_data        { id, name, region, age }
+grant CardOps   on cards_data        { card_id, card_type, limit, activated }
+grant FraudRisk on transactions_data { txn_id, card_id, amount, merchant, timestamp }
+grant FraudRisk on users_data        { id, region }
+```
+
+Anything outside these grants is implicitly denied;
+`users_data.ssn`, `users_data.email`, and `cards_data.card_number`
+are never released regardless of which principal queries. The
+rewriter projects each plan's output schema down to the grant
+union under the querying principal and refuses plans whose
+filter predicates touch columns outside that union (§4).
+
 
 ## Rewriter
 
