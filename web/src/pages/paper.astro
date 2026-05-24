@@ -18,6 +18,8 @@ const authorLine = frontmatter.author?.join(", ") ?? "";
       {frontmatter.subtitle && <p class="paper__subtitle">{frontmatter.subtitle}</p>}
       {authorLine && <p class="paper__author">{authorLine}</p>}
       <p class="paper__meta">
+        <a href="/paper.pdf">Download PDF</a>
+        {" · "}
         <a href="https://github.com/debuggingfuture/secure-program-synthesis/blob/research/initial-scaffold/paper/paper.md">
           paper.md
         </a>

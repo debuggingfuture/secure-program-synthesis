@@ -1,0 +1,10 @@
+flowchart LR
+  agent[LLM agent] -->|MCP plan + biscuit| gw{{Postern gateway}}
+  subgraph TCB
+    gw -->|verify| bc[biscuit verifier]
+    bc -->|principal| rw[Lean-extracted rewriter]
+    pol[(policy)] --> rw
+    cat[(catalog)] --> rw
+    rw -->|Option Plan| exe[DuckDB / Polars]
+  end
+  exe --> agent

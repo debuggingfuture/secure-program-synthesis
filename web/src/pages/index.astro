@@ -21,6 +21,7 @@ import Base from "../layouts/Base.astro";
       </p>
       <div class="hero__ctas">
         <a class="cta cta--primary" href="/paper">Read the paper</a>
+        <a class="cta" href="/paper.pdf">Download PDF</a>
         <a class="cta" href="/slides">6-slide overview</a>
         <a class="cta" href="/demo">Try the rewriter (WASM)</a>
       </div>
@@ -31,11 +32,12 @@ import Base from "../layouts/Base.astro";
         <h2>The shape</h2>
         <p>
           Agents reading the lakehouse aren't humans on stable roles — they're
-          short-lived, contextual, and demonstrably prompt-injectable. When
-          channel ACLs / FLS / customer-scoped tokens collapse at ETL into a
-          single ingest IAM role, an injected agent inherits the
-          <em>union</em> of the upstream principals' permissions rather than
-          the <em>intersection</em> under its querying identity.
+          short-lived and contextual, and the same agent code may legitimately
+          serve different principals under different tasks. RBAC's static
+          <em>identity → role → permission</em> chain encodes none of that;
+          per-engine RLS doesn't survive ETL; tenant segregation forfeits the
+          cross-source joins. Policy has to live at the query plane, gated
+          under the agent's task-scoped identity at query time.
         </p>
       </article>
 

@@ -5,14 +5,22 @@
 Research artifact for Track 3 of the [Apart Research Secure Program
 Synthesis Hackathon, 2026-05-22 → 2026-05-24](https://apartresearch.com/sprints/secure-program-synthesis-hackathon-2026-05-22-to-2026-05-24).
 
-**Problem.** Per-source authorization is non-compositional under
-ETL fusion. When $n$ heterogeneous sources are materialized into a
-single columnar lakehouse, the per-source guards (channel ACLs,
-field-level security, OAuth-scoped tokens) have no representative
-in the lake's authorization surface, and the effective permission
-of a query-issuing agent becomes the *union* of the upstream
-principals rather than the *intersection* under the querying
-identity.
+**Site.** [postern-web.pages.dev](https://postern-web.pages.dev) —
+landing page, 7-slide deck (`/slides`), rendered paper
+(`/paper`), and WASM rewriter demo (`/demo`). Deployed from
+`web/dist` via `pnpm -C web deploy:cf` (`wrangler pages deploy`).
+
+**Problem.** Agents querying a lakehouse aren't humans on stable
+roles. Their effective rights are *context-driven* — which
+principal the agent acts for, which task it was invoked under,
+which scope the caller granted — and the same agent code may
+legitimately need different views on different calls. RBAC's
+static *identity → role → permission* chain encodes none of that;
+per-engine RLS does not survive ETL into an engine-agnostic
+Parquet store; physical tenant segregation forfeits the
+cross-source joins that motivate the lakehouse in the first place.
+Policy has to move to the *query plane*, gated under the agent's
+task-scoped identity at query time.
 
 **Solution.** Postern mediates every read at the plan boundary
 against a column-grant policy. Its core — Plan IR, policy DSL,
