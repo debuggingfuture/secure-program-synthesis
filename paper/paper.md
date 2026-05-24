@@ -46,16 +46,14 @@ keywords:
 
 # Introduction
 
-Production agentic systems are converging on a data-lakehouse
-substrate organised under data-mesh and local-first principles.
-Heterogeneous institutional sources are ingested and compacted
-into engine-agnostic columnar storage — typically Apache Arrow
-Parquet on S3-class object stores, queried in-process by DuckDB
-[@duckdb] — and the resulting context layer is read at inference
-time by LLM agents, often co-located with on-prem or edge
-runtimes hosting local models. The pattern is exemplified by
-mem0 [@mem0], Notion AI, and Airbyte-class ETL workers. The
-access-control consequence is sharp: the entity issuing SQL or
+Production agentic systems increasingly read context from
+data-lakehouse stores at inference time. The pattern is to
+compact heterogeneous institutional sources into engine-agnostic
+columnar formats — typically Apache Arrow Parquet on S3-class
+object storage — and query them with in-process analytical
+engines such as DuckDB [@duckdb], often co-located with on-prem
+or edge runtimes hosting local models. The access-control
+consequence is sharp: the entity issuing SQL or
 dataframe queries against the lakehouse is no longer a human
 analyst on a stable role, but an LLM agent mediated by tool-call
 protocols such as the Model Context Protocol [@mcp], and
