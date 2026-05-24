@@ -81,6 +81,17 @@ M-series Mac on a warm cache.
 See `paper/paper.md` §3–§5 for the full design and §6 for open
 challenges (joins, aggregation + DP, biscuit attenuation in-proof).
 
+## Defense-in-depth
+
+Postern is the **plan-boundary** layer — last chance to bound what
+a query can read. Pair it with an **agent-code-boundary** layer
+like the Scala-3-capture-checking approach from Odersky et al.
+2026 ([arXiv:2603.00991](https://arxiv.org/abs/2603.00991)), which
+makes capabilities first-class program variables so agent-emitted
+code cannot exfiltrate data it doesn't hold a capability for. The
+two layers compose without re-verifying each other's TCB; see
+paper §3 "Defense-in-depth with capability tracking".
+
 ## Status & scope
 
 This is a research artifact, not production code. The Lean spec

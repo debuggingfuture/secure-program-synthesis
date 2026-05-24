@@ -177,6 +177,27 @@ Post-hoc projection is the simplest algorithm that admits a clean
 soundness proof. Predicate-pushdown variants can be verified
 against this rewriter as a reference; we leave that to future work.
 
+## Defense-in-depth with capability tracking
+
+Postern enforces at the *plan boundary*: the gateway is the last
+chance to bound what a query can read. The complementary defense
+sits at the *agent-code boundary*: bound what the agent's emitted
+code can *do* with whatever it does receive. Odersky et al.
+[@capabilities-agents-2026] propose exactly this, using Scala 3
+capture-checking to make capabilities first-class program
+variables so agent-generated code cannot exfiltrate data it does
+not hold a capability for. The two layers compose: an agent issuing
+a query through Postern receives at most the policy-allowed columns
+(Theorems 1–2); the agent's downstream code then runs under
+capture-checked capabilities and cannot smuggle even those columns
+to an out-of-scope effect.
+
+We treat capture-checked execution as **out of TCB scope for
+Postern** (it is upstream of us), but the Lean rewriter is
+deliberately small precisely so that a system like
+[@capabilities-agents-2026] can wrap it without re-verifying the
+gateway side.
+
 # Formal model
 
 Mechanized in `verifier/lean/Postern.lean`. Build with `lake build`;
@@ -292,6 +313,14 @@ landmarks:
   for capability-flow defences against indirect prompt injection
   at the *agent* layer. Postern is the complementary lake-side
   enforcement point.
+- **Capture-checking for agent capabilities**
+  [@capabilities-agents-2026]. Odersky et al. propose Scala 3
+  capture-checking as a type-level "tactic" that makes capabilities
+  first-class program variables, so agent-emitted code cannot
+  exfiltrate data it doesn't hold a capability for. Stack-
+  complementary to Postern: their work bounds the agent's code,
+  ours bounds the plan at the gateway. The two layers compose
+  without re-verifying each other's TCB.
 
 # Open challenges and future work
 
