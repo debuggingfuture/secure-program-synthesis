@@ -3,19 +3,31 @@ name: lean
 on:
   push:
     branches: [main]
-    paths: ["verifier/lean/**", ".github/workflows/lean.yml"]
+    paths:
+      - "verifier/lean/**"
+      - "prototype/corpus/**"
+      - ".github/workflows/lean.yml"
   pull_request:
-    paths: ["verifier/lean/**", ".github/workflows/lean.yml"]
+    paths:
+      - "verifier/lean/**"
+      - "prototype/corpus/**"
+      - ".github/workflows/lean.yml"
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: verifier/lean
     steps:
       - uses: actions/checkout@v4
       - uses: leanprover/lean-action@v1
         with:
           lake-package-directory: verifier/lean
           use-mathlib-cache: false
+      - name: emit corpus and check against committed copy
+        working-directory: verifier/lean
+        run: |
+          lake exe postern-corpus > /tmp/fresh-corpus.json
+          if ! diff -q /tmp/fresh-corpus.json ../../prototype/corpus/postern-corpus.json; then
+            echo "::error::corpus drift detected — regenerate with scripts/reproduce.sh and commit"
+            diff /tmp/fresh-corpus.json ../../prototype/corpus/postern-corpus.json | head -40
+            exit 1
+          fi

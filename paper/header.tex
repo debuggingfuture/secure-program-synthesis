@@ -1,0 +1,14 @@
+% Pandoc emits \xmpquote{...} inside \hypersetup{pdfkeywords=...} when a
+% keywords list is set. \xmpquote comes from hyperxmp; if it isn't loaded
+% we provide a passthrough so the build doesn't break.
+\providecommand{\xmpquote}[1]{#1}
+
+% Map Unicode characters that the default Latin Modern fonts don't carry
+% (check marks and math symbols used in tables / verbatim code).
+\usepackage{newunicodechar}
+\usepackage{amssymb}
+\newunicodechar{✓}{\ensuremath{\checkmark}}
+\newunicodechar{✗}{\ensuremath{\times}}
+\newunicodechar{⊆}{\ensuremath{\subseteq}}
+\newunicodechar{∩}{\ensuremath{\cap}}
+\newunicodechar{∅}{\ensuremath{\emptyset}}

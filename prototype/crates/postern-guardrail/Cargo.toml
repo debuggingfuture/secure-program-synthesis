@@ -1,0 +1,19 @@
+[package]
+name = "postern-guardrail"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+default = ["gateway"]
+# `gateway` pulls in postern-core (which is std) and exposes
+# `gateway::with_plan`. A downstream agent crate that wants to be
+# `#![no_std]` should depend on this crate with
+# `default-features = false`.
+gateway = ["dep:postern-core"]
+
+[dependencies]
+postern-core = { path = "../postern-core", optional = true }
+
+[dev-dependencies]
