@@ -1,0 +1,13 @@
+# Postern policy — financial-institution demo.
+# Surface syntax is sugar over the `Grant` list in
+# verifier/lean/Postern.lean (namespace Demo).
+
+grant CRM       on users_data        { id, name, region, age }
+grant CardOps   on cards_data        { card_id, card_type, limit, activated }
+grant FraudRisk on transactions_data { txn_id, card_id, amount, merchant, timestamp }
+grant FraudRisk on users_data        { id, region }
+
+# Anything outside these grants is implicitly denied.
+# - PII (users_data.email, users_data.ssn) is never granted.
+# - PAN (cards_data.card_number) is never granted.
+# - users_data.user_id link is grantable but unused by these principals.

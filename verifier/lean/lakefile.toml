@@ -1,0 +1,12 @@
+name = "postern"
+defaultTargets = ["Postern", "CheckAxioms"]
+
+[[lean_lib]]
+name = "Postern"
+
+[[lean_lib]]
+name = "CheckAxioms"
+
+[[lean_exe]]
+name = "postern-corpus"
+root = "Main"

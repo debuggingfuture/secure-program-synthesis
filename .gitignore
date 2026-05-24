@@ -20,6 +20,17 @@ lakefile.olean
 *.olean
 *.ilean
 *.hash
+verifier/lean/lake-manifest.json
+
+# Rust
+prototype/target/
+prototype/**/*.rs.bk
+prototype/Cargo.lock
+
+# Paper artifacts
+paper/paper.pdf
+paper/*.aux
+paper/*.log
 
 # Editor
 .vscode/
