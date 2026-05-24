@@ -4,26 +4,40 @@ subtitle: "Secure Program Synthesis Hackathon 2026 — Track 3 research artifact
 author:
   - name: FractalBox
 abstract: |
-  Per-source authorization is *non-compositional* under ETL
-  fusion: when $n$ heterogeneous sources are materialised into a
-  single columnar lakehouse, the per-source guards (channel ACLs,
-  field-level security, OAuth-scoped tokens) have no representative
-  in the lake's authorization surface, and the effective permission
-  of a query-issuing agent becomes the *union* of the upstream
-  principals rather than the *intersection* under the querying
-  identity. **Postern** closes this gap at the plan boundary: a
-  verified gateway that rewrites every
-  dataframe plan against a column-grant policy before it reaches the
-  executor. The core — Plan IR, policy, rewriter — is mechanized in
-  Lean 4 with nine `sorry`-free theorems, including
-  *output-column soundness* and *filter-predicate soundness*
-  (closing the `WHERE ssn = ?` side-channel the IR previously
-  admitted). A Rust mirror runs the same algorithm and is
-  **conformance-tested against a Lean-emitted JSON reference
-  corpus** of 18 cases (15 accept, 3 refusal), all green. We
-  exercise the artifact on a 3-department financial-institution
-  scenario and identify three load-bearing open problems — joins,
-  aggregation / DP, capability attenuation.
+  Row- and column-level access control (RLS/CLS) as offered by
+  ACID-class transactional databases is not directly transferable
+  to columnar lakehouses: enforcement is per-engine, and
+  per-source policies do not compose across heterogeneous ETL
+  paths. Tenant segregation — the deployed alternative — eliminates
+  the difficulty by construction, at the cost of partitioning
+  cross-tenant queries into disjoint data silos. We study a third
+  point in this design space, *plan-level rewriting with
+  mechanised soundness*, and present **Postern**, a column-grant
+  access gateway for agentic data lakehouses. The artifact
+  comprises three components. (i) A Plan IR
+  ($\mathit{Scan}$ / $\mathit{Project}$ / $\mathit{Filter}$) and
+  policy DSL with a rewriter
+  $\mathrm{rewrite} : \mathit{Catalog} \to \mathit{Policy} \to
+  \mathit{Principal} \to \mathit{Plan} \to \mathit{Option}\ \mathit{Plan}$,
+  mechanised in Lean~4. Nine theorems are proved without `sorry`
+  and audited for axiom dependencies (bounded by `propext` and
+  `Quot.sound`); the principal theorems establish output-column
+  soundness, filter-predicate soundness, idempotence, monotonicity
+  in the policy, and explicit refusal for unknown relations and
+  forbidden filter columns. (ii) A Rust capability-tracking
+  layer, inspired by Odersky et al.'s
+  capture-checking proposal [@capabilities-agents-2026], that
+  bounds what the agent's code may do with values the rewriter
+  releases; the bound is enforced by an invariant brand lifetime
+  combined with sealed types and opaque-receipt sinks. (iii) A
+  reference-conformance harness that asserts byte-equivalence
+  between the Rust implementation and the Lean reference on a
+  hand-curated corpus of 18 cases (15 accept, 3 refusal). We
+  evaluate the artifact on a financial-institution scenario over
+  the Kaggle `transactions-fraud-datasets`, and identify three
+  open problems: cross-relation joins under proof, aggregation
+  with a differential-privacy boundary, and capability
+  attenuation modelled inside the Lean theorems.
 keywords:
   - access control
   - formal verification
@@ -35,148 +49,182 @@ keywords:
 
 # Introduction
 
-The deployment shape of an agentic system in 2026 has two
-properties that 2024-era access control was not designed for.
-**(i)** Context is materialized from heterogeneous upstream sources
-into a single columnar lakehouse — typically DuckDB over Parquet on
-S3 [@duckdb] — populated by ETL pipelines [@mem0]. **(ii)** The
-agent itself *issues* the dataframe query, through MCP tools [@mcp];
-indirect prompt-injection benchmarks [@agentdojo2024; @camel2025]
-make the case that the agent must be treated as adversarial.
+A *data lakehouse* is an analytic substrate that consolidates
+multiple upstream operational sources via extract-transform-load
+(ETL) pipelines into a single columnar store — typically Parquet
+on object storage, queried in-process by DuckDB [@duckdb].
+Recent deployments couple this substrate with LLM agents that
+issue dataframe queries directly, mediated by tool-call protocols
+such as the Model Context Protocol [@mcp]. Indirect-prompt-
+injection studies [@agentdojo2024; @camel2025] establish that the
+agent must be treated as adversarial. The conjunction raises an
+access-control question that pre-LLM database access-control
+mechanisms were not designed to answer.
 
-**The combination breaks per-source authorization.** For upstream
+## Existing approaches
+
+We summarise the two responses currently deployed in production,
+and the limitation each one accepts.
+
+**Row- and column-level security inside ACID-class databases.**
+PostgreSQL row security policies [@rls-postgres] and equivalents
+in other transactional engines bind authorization predicates to
+relations inside one engine instance. In a lakehouse setting
+they are not directly applicable. Parquet is engine-agnostic;
+DuckDB exposes no RLS surface; and policies expressed in the
+upstream engine do not survive the ETL transformation, because
+the catalog of the downstream store is structurally distinct from
+that of the source. Reconstructing equivalent restrictions
+external to the originating RDBMS demands per-engine adapters and
+per-source policy duplication, which historically scales poorly
+with the number of sources and the rate of policy churn.
+
+**Tenant segregation.** Where the previous approach fails,
+deployments default to *physical* partitioning: per-tenant or
+per-department object-storage prefixes queried by disjoint engine
+instances. The arrangement enforces the per-source perimeter by
+absence rather than by construction, and forfeits the lakehouse's
+primary technical motivation — joins and aggregations across
+sources that were previously siloed. The result is a data silo
+under the lakehouse label.
+
+## A property gap
+
+We restate the underlying mismatch precisely. Fix upstream
 sources $S_1, \ldots, S_n$ with access-control denotations
-$A_1, \ldots, A_n$, the materialized lakehouse
-$L = \bigcup_i S_i$ has authorization denotation $A_L$ determined
-by the ingest service-account's IAM role alone; the originals
-$\{A_i\}$ have no semantic representative in $A_L$. The effective
-permission of an agent querying $L$ is the *union* of upstream
-principals' permissions, not the *intersection* under the querying
-identity. Concretely: when Slack channel ACLs, Salesforce field-
-level security, and Stripe customer-scoped tokens all collapse to
-one DuckDB service-account role at ingest, an indirect-prompt-
-injected agent inherits the read surface of the ingest service
-itself.
+$A_1, \ldots, A_n$ over their respective schemas, and let
+$L = \bigcup_i S_i$ denote the materialised lakehouse. The
+authorization denotation $A_L$ of $L$ is determined by the
+ingest service account's IAM role alone; the originals
+$\{A_i\}$ admit no semantic representative in $A_L$ once
+materialisation has occurred. The effective permission of an
+agent issuing a plan against $L$ is therefore the *union*
+$\bigcup_i \mathit{perm}_{A_i}$ of upstream principals'
+permissions, not the *intersection* under the querying
+identity. When channel ACLs, field-level security, and
+customer-scoped tokens collapse to a single service-account role
+at ingest, an indirect-prompt-injected agent inherits the read
+surface of the ingest service.
 
-**Postern** restores the boundary with a two-layer verified
-gateway.
+## Approach
 
-- **Layer 1 — plan boundary.** A column-grant policy DSL and a
-  plan rewriter whose soundness is mechanized in Lean 4 [@lean4].
-  For every accepted plan two invariants hold: the output schema
-  is contained in the policy-allowed columns
-  (`rewrite_sound`), and every column read by a `Filter` predicate
-  is policy-allowed (`rewrite_filter_sound`, closing the
-  `WHERE ssn = ?` side-channel). Refusal is explicit — unknown
-  relations and forbidden filter columns produce `None`, not
-  silently empty schemas.
+We investigate a third point in the design space: a
+*plan-level rewriter* mediating every read against a column-grant
+policy. We pose two requirements. (1) The rewriter's
+correctness — every accepted plan respects the policy — should
+admit a mechanised proof, on the grounds that this is the
+property most readily verified statically and most readily
+falsified by an indirect-prompt-injected agent in deployment.
+(2) The values that the rewriter releases should remain bounded
+once they cross the gateway boundary, both lexically and in the
+operations the agent's code may perform with them.
 
-- **Layer 2 — agent-code boundary.** A Rust capability-tracking
-  layer inspired by Odersky et al. 2026
-  [@capabilities-agents-2026], which proposes Scala 3
-  capture-checking for the same purpose. The verified output of
-  Layer 1 is wrapped in `Tagged<T, C>` and handed to the agent
-  together with a single-use `Cap<C>`. Sanctioned compute
-  operations (`map`, `and_then`) preserve the tag; un-tagging
-  requires consuming the Cap at a sanctioned sink. Capabilities
-  are unforgeable — sealed types, private constructors — so
-  downstream agent code cannot mint a Cap, and the inner value of
-  `Tagged` is unreachable without one.
-
-The two layers are stack-complementary. Layer 1's correctness is
-mechanized (Lean theorems); Layer 2's correctness reduces to Rust's
-privacy and ownership rules, and we exhibit two bypass attempts
-that fail at compile time (forging `Cap`, accessing
-`Tagged::value`).
+We address (1) in Lean~4: a Plan IR, a column-grant policy
+language, and a rewriter
+$\mathrm{rewrite} : \mathit{Catalog} \to \mathit{Policy} \to
+\mathit{Principal} \to \mathit{Plan} \to \mathit{Option}\
+\mathit{Plan}$, with nine theorems established without `sorry`
+(§4). We address (2) in Rust, mechanising in the type system a
+weaker analog of capture-checking [@capabilities-agents-2026]:
+sealed capability tokens whose construction is private to the
+gateway, branded by an invariant scope lifetime, and consumed at
+opaque-receipt sinks (§3). The two layers compose without
+re-verifying each other's trusted base.
 
 ## Contributions
 
-1. **Mechanized plan-boundary core (Layer 1).** A Plan IR
-   (`Scan`/`Project`/`Filter`), a column-grant policy language,
-   and `rewrite : Catalog → Policy → Principal → Plan → Option Plan`,
-   all in Lean 4. **Nine** `sorry`-free theorems span output-
-   column soundness, filter-predicate soundness, schema subset,
-   monotonicity in policy, idempotence, and explicit-refusal
-   lemmas for unknown relations and forbidden filter columns
-   (§4). Per-theorem axiom dependencies are audited
-   (`CheckAxioms.lean`) and bounded by `{propext, Quot.sound}` —
-   Lean's built-in foundational axioms; two theorems depend on
-   none.
+1. A Plan IR ($\mathit{Scan}$/$\mathit{Project}$/$\mathit{Filter}$),
+   a column-grant policy language, and a rewriter, mechanised in
+   Lean~4 [@lean4]. The development comprises nine
+   `sorry`-free theorems: output-column soundness, filter-predicate
+   soundness, schema subset, idempotence under repeated
+   application, monotonicity in the policy, two no-new-column
+   lemmas, and explicit-refusal lemmas for unknown relations and
+   for filter predicates over forbidden columns (§4). Axiom
+   dependencies are audited per theorem and bounded by `propext`
+   and `Quot.sound`; two theorems depend on none.
 
-2. **Capability-tracking guardrail (Layer 2).** A Rust crate
-   `postern-guardrail` providing sealed `Cap<C>` and
-   `Tagged<T, C>` types and a `gateway::issue_plan` entry point
-   that combines the verified rewrite with capability issuance.
-   Two bypass attempts are pinned as `compile_fail` doctests:
-   constructing `Cap` outside the crate, and reading
-   `Tagged::value` directly. Rust has no effect system, so the
-   layer's perimeter is the type system's privacy boundary; we
-   discuss the limits in §3.
+2. A Rust capability-tracking layer (`postern-guardrail`)
+   implementing three composable mechanisms: sealed
+   `Cap<'sc, C>` tokens whose construction is private to the
+   crate, an invariant brand lifetime `'sc` enforced by
+   `PhantomData<fn(&'sc ()) -> &'sc ()>` and gated by a
+   universally-quantified scope combinator, and opaque-receipt
+   sinks that consume both the `Cap` and the carrier `Tagged`
+   without exposing the underlying value. Three lexical bypass
+   attempts (forging `Cap`, projecting `Tagged::value`, escaping
+   the brand) are pinned as `compile_fail` doctests. The
+   agent-facing surface is `no_std`-compatible (§3).
 
-3. **Rust mirror + reference-conformance harness.** A Rust crate
-   `postern-core` mirrors the Lean types and rewriter byte-for-
-   byte (target deployment: a Polars [@polars] / DuckDB gateway
-   with biscuit-token [@biscuit] capability distribution). The
-   harness `postern-diff` ingests a JSON corpus emitted by Lean
-   and asserts byte-equivalence of the resulting `Option<Plan>`,
-   schema, predicate read-set, and touched relation. **18 / 18
-   cases pass**, including three refusal regressions for known
-   attack shapes (filter-on-forbidden-column, unknown-relation,
-   nested forbidden filter). We label this *reference-conformance
-   testing*, not QuickCheck-style differential testing — the
-   corpus is hand-curated; property-based generation is §6.
+3. A Rust implementation of the rewriter (`postern-core`)
+   structurally mirroring the Lean reference, and a
+   reference-conformance harness (`postern-diff`) that asserts
+   byte-equivalence between the Rust output and the Lean
+   reference on a corpus of 18 hand-curated cases (15 accept, 3
+   refusal). We label the procedure *reference-conformance
+   testing* rather than QuickCheck-style differential testing,
+   reserving the latter term for property-based generation; the
+   latter is among the open problems of §6.
 
-4. **Financial-institution case study.** Kaggle
-   `transactions-fraud-datasets` with three principals
-   (CRM, CardOps, FraudRisk) exercising PII redaction, cross-
-   department refusal, and minimum-necessary disclosure (§5). Each
-   row of the demo table is a corpus case driving the conformance
-   harness.
+4. A case study over the Kaggle `transactions-fraud-datasets`
+   schema, with three principals (CRM, Card Operations, Fraud
+   Risk) exercising PII redaction, cross-departmental refusal,
+   and minimum-necessary disclosure (§5). Each row of the
+   evaluation table corresponds to a corpus case driving the
+   conformance harness.
 
-# Plan IR (preview)
+# Plan IR
 
-For §2 and §3 to be readable in one pass we state the IR up front:
-
-```
-Plan ::= Scan(rel)
-       | Project(plan, cols)
-       | Filter(plan, col)
-```
-
-`Project(p, cs)` keeps only `cs ∩ schema(p)`. `Filter(p, c)` is
-row-only — the column `c` is *read* by the predicate but does not
-appear in the output schema. This asymmetry is what makes the
-filter side-channel real.
+We state the IR before the threat model so §2 may reference its
+operators directly. Plans are single-relation expressions built
+from three constructors:
+$$
+  \mathit{Plan} \;::=\; \mathit{Scan}(r) \mid \mathit{Project}(\mathit{Plan}, \mathit{cs}) \mid \mathit{Filter}(\mathit{Plan}, c)
+$$
+where $r \in \mathit{Relation}$, $c \in \mathit{Column}$, and
+$\mathit{cs} \in \mathit{List}\ \mathit{Column}$. We write
+$\sigma(q)$ for the output schema of plan $q$ under a catalog
+$\mathit{cat}$, defined inductively:
+$\sigma(\mathit{Scan}(r)) = \mathit{cat}(r)$;
+$\sigma(\mathit{Project}(p, \mathit{cs})) = \sigma(p) \cap \mathit{cs}$;
+$\sigma(\mathit{Filter}(p, c)) = \sigma(p)$. The asymmetry between
+$\mathit{Project}$ (which alters the output schema) and
+$\mathit{Filter}$ (which does not, despite reading $c$) is the
+source of the *filter side-channel* discussed in §2.
 
 # Threat model
 
-We assume a trusted gateway holding the policy and the
-cryptographic root for capability tokens. Everything else is
-untrusted:
+The trusted computing base (TCB) consists of the gateway process
+itself, the catalog $\mathit{cat}$ that it consults, the
+plan-to-executor lowering step that hands the rewritten plan to
+DuckDB, the principal extraction step that maps a verified
+capability token to a $\mathit{Principal}$ string, and the
+DuckDB + Parquet store. All other parties are untrusted.
 
-| Component                                  | Trust | Notes                                                          |
+| Component                                  | Trust | Justification                                                  |
 | ------------------------------------------ | :---: | -------------------------------------------------------------- |
-| LLM / agent (planner)                      |   ✗   | Jailbreakable; may emit hostile SQL / dataframe ops.            |
-| Tool-generated code                        |   ✗   | Indirect injection from retrieved context; supply chain.        |
-| Capability tokens [@biscuit]               |   ~   | Trusted *only* once the gateway verifies the signature.         |
-| Gateway process (Postern, this paper)      |   ✓   | TCB. Holds the Lean-verified rewriter and the policy.           |
-| **Catalog** (relation → columns map)       |   ✓   | TCB. Assumed bound to the physical Parquet schema (§6).         |
-| **Plan-to-executor lowering**              |   ✓   | TCB. We trust the rewritten plan is honoured literally by DuckDB. |
-| **Principal-string extraction from token** |   ✓   | TCB. A buggy biscuit verifier defeats every theorem below.      |
-| DuckDB + Parquet store                     |   ✓   | TCB.                                                            |
+| LLM / agent planner                        |   ✗   | Susceptible to direct and indirect prompt injection.            |
+| Agent-generated code                       |   ✗   | Composes upstream-tainted context with downstream effects.      |
+| Capability tokens [@biscuit]               |   ~   | Trust contingent on the gateway's signature verification.       |
+| Gateway process                            |   ✓   | Hosts the Lean-verified rewriter and the policy.                |
+| Catalog $(r \mapsto \text{columns})$       |   ✓   | Assumed bound to the physical Parquet schema (§6).              |
+| Plan-to-executor lowering                  |   ✓   | The rewritten plan is assumed honoured literally by DuckDB.     |
+| Principal-string extraction                |   ✓   | A bug in token verification invalidates every theorem of §4.    |
+| DuckDB + Parquet store                     |   ✓   | Standard storage-engine assumptions apply.                      |
 
-**In-scope attacks the rewriter defeats.** (i) Over-projection of
-forbidden columns. (ii) Filter on a forbidden column (the
-`WHERE ssn = ?` side-channel — closed by
-`rewrite_filter_sound`). (iii) Scan of an un-attested relation
-(closed by `rewrite_refuses_unknown`). (iv) Cross-department reach
-by a principal with no matching grants. (v) Unknown principals
-(fail-closed: empty allow ⇒ empty schema).
+The attacks within scope of the formal model are: (i) over-
+projection of forbidden columns; (ii) filter on a forbidden
+column (the side-channel addressed by `rewrite_filter_sound`);
+(iii) scan of a relation absent from the catalog (addressed by
+`rewrite_refuses_unknown`); (iv) cross-departmental reach by a
+principal lacking matching grants; and (v) unknown principals,
+which we treat fail-closed via the empty-allow convention.
 
-**Out of scope (paper §6).** Aggregation / inference attacks;
-covert channels through query latency or row counts; multi-relation
-joins; biscuit-token attenuation inside the proof; policy
-synthesis from natural language; the planner→executor lowering
+The following are deliberately out of scope and discussed in §6:
+aggregation and inference attacks; covert channels through
+latency or row-count observation; multi-relation joins; biscuit
+attenuation modelled inside the Lean proof; policy synthesis
+from natural language; and the planner-to-executor lowering
 step.
 
 # Design
@@ -221,138 +269,189 @@ Post-hoc projection is the simplest algorithm that admits a clean
 soundness proof. Predicate-pushdown variants can be verified
 against this rewriter as a reference; we leave that to future work.
 
-## Layer 2: capability-tracking guardrail
+## Capability-bounded data flow
 
-Layer 1 (the Lean rewriter) bounds *what data reaches the agent*.
-Layer 2 bounds *what the agent's compute can do with it*. Odersky
-et al. [@capabilities-agents-2026] propose using Scala 3
-capture-checking for exactly this — capabilities as first-class
-program variables, so agent-generated code cannot exfiltrate data
-it does not hold a capability for. Rust has no capture-checking,
-but the same intuition can be mechanized via **sealed types**:
-capabilities are unforgeable tokens minted only by the gateway,
-and data is wrapped in `Tagged<T, C>` whose inner value cannot be
-reached without consuming a matching `Cap<C>`.
+The rewriter of §3 (Layer 1) constrains what data reaches the
+agent. A separate layer (henceforth *Layer 2*) constrains what
+the agent's code may do with the values released. Odersky et al.
+[@capabilities-agents-2026] propose Scala 3 capture-checking as a
+type-level mechanism for this purpose: capabilities are
+first-class program variables, and the compiler tracks each
+function's *capture set* — the capabilities it may use — so that
+agent-generated code cannot perform an effect for which it does
+not hold a capability. Rust has no capture-checking. We
+mechanise a weaker analog by composing three pure-Rust
+constructions, each closing one face of the gap.
 
-The `postern-guardrail` crate provides:
+**Sealed capability tokens.** `Cap<'sc, C>` carries no public
+constructor and contains a `Sealed` field whose constructor is
+private to the crate. Forging a `Cap` is therefore a privacy
+violation rejected at compile time (verified by a
+`compile_fail` doctest in the crate). Carrier values
+`Tagged<'sc, T, C>` likewise have a private `value` field;
+the inner $T$ is unreachable by direct field access (also
+verified by `compile_fail`).
+
+**Invariant brand lifetime.** Both `Cap` and `Tagged` carry a
+brand parameter $'sc$, made invariant by
+$\texttt{PhantomData<fn(\&'sc ()) -> \&'sc ()>}$. The sole entry
+point to the layer is a scope combinator
+$$
+\texttt{run<T, C, R, F>(value, f) -> R}
+\quad\text{where}\quad
+\texttt{F: for<'sc> FnOnce(Cap<'sc, C>, Tagged<'sc, T, C>) -> R},\;
+\texttt{R: 'static}.
+$$
+The universal quantification of $'sc$ together with $R: 'static$
+forces the closure's return type to be free of $'sc$, ruling out
+any path by which a $\mathtt{Cap}$ or $\mathtt{Tagged}$ might
+escape the scope. The construction is the same one used by
+`ghost-cell` for branded references. A third `compile_fail`
+doctest demonstrates that attempting to return the `Cap` from
+the closure is rejected.
+
+**Opaque-receipt sinks.** Carrier extraction is governed by a
+fixed set of sink functions, each of which consumes both
+$\texttt{Cap<'sc, C>}$ and $\texttt{Tagged<'sc, T, C>}$ and
+returns a *receipt* type that contains no information derived
+from $T$ beyond its serialised length:
 
 ```rust
-// Sealed: only the gateway can mint; downstream cannot construct.
-pub struct Cap<C: 'static> { /* private fields */ }
-pub struct Tagged<T, C: 'static> { /* private value */ }
-
-impl<T, C: 'static> Tagged<T, C> {
-  pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Tagged<U, C>;
-  pub fn and_then<U>(self, f: impl FnOnce(T) -> Tagged<U, C>) -> Tagged<U, C>;
-  pub fn release(self, _: Cap<C>) -> T;   // single-use: Cap moves
-}
-
-pub mod gateway {
-  pub fn issue_plan(cat: &Catalog, pol: &Policy, prin: &str, plan: &Plan)
-    -> Option<(Tagged<Plan, AllowedColumns>, Cap<AllowedColumns>)>;
-  // None iff Layer 1's `rewrite` refused.
-}
+pub fn to_llm<'sc, T, C, S>(cap: Cap<'sc, C>,
+                            data: Tagged<'sc, T, C>,
+                            serialize: S) -> LlmAck
+  where S: FnOnce(T) -> String;
 ```
 
-The gateway's `issue_plan` is the only entry to capability minting:
-it runs the verified rewriter and, on accept, returns a
-`Tagged<Plan, AllowedColumns>` together with its single-use
-`Cap<AllowedColumns>`. Agent code may compose the value through
-`map` / `and_then` (the tag is preserved by construction) but the
-only path back to a raw `T` is `release(cap)`, which consumes the
-Cap.
+The agent has no public method that returns raw $T$; the prior
+draft's `Tagged::release(cap) -> T` is removed in favour of
+the sink interface above. The only operations on $\mathit{Tagged}$
+that the agent's code can perform are `map` and `and_then`, both
+of which preserve the brand and the kind.
 
-**What this defends against.** Forging a Cap (`Cap` is sealed),
-reading `Tagged::value` directly (private field), and using a
-released Cap twice (consumed by `release`). The first two are
-demonstrated as `compile_fail` doctests in the crate: an
-attempt to construct a `Cap` or to project `t.value` does not
-type-check.
+**The agent-facing surface is `#![no_std]`.** The crate is
+partitioned so that the gateway-side integration with
+`postern-core` lives behind a `gateway` feature flag; the
+agent-facing types and operations (`Cap`, `Tagged`, `run`,
+`sinks`) depend only on `core` and `alloc`. A downstream agent
+crate declaring `#![no_std]` and depending on `postern-guardrail`
+with `default-features = false` therefore has no link-level
+access to `std::println!`, `std::process::exit`, network sockets,
+or filesystem APIs, and the only side-effect channels available
+are those reached through the sanctioned sinks.
 
-**What it does not defend against.** Rust has no effect system. A
-capability-bearing agent can still side-channel through `panic!`,
-timing, or thread-local globals. We make `Cap: !Send + !Sync` (via
-`PhantomData<*const ()>`) to close the obvious thread-move, and
-deliberately do not implement `Display` / `Debug` for `Tagged`, but
-a determined adversary inside the agent runtime is out of scope.
-The full hardening path — a custom lint or `unsafe`-style markers
-gating exit sinks — is §6.
+**Residual.** Inside a `map` closure body the agent has
+temporary access to a value of type $T$; Rust does not bound
+what that body may do with the value. Three classes of
+side-channel survive: `panic!` with formatted strings, timing
+observed by the host, and stash in thread-local storage when
+$T: 'static$. We mitigate the obvious thread-move attack by
+making both `Cap` and `Tagged` `!Send + !Sync` via the
+`*const ()` phantom, but a determined adversary inside the agent
+runtime is out of scope for the present construction. A
+genuinely tight analog of capture-checking in Rust appears to
+require either a custom lint over closure bodies or a Wasm-class
+sandbox; both directions are discussed in §6.
 
 # Formal model
 
-Mechanized in `verifier/lean/Postern.lean`. Build with `lake build`;
-the per-theorem axiom set is reported by `CheckAxioms.lean`.
+The development is mechanised in `verifier/lean/Postern.lean`;
+the per-theorem axiom set is reported by `CheckAxioms.lean`. We
+write $\mathit{rewrite}\ \mathit{cat}\ P\ p\ q$ for the rewriter
+applied to catalog $\mathit{cat}$, policy $P$, principal $p$, and
+plan $q$. The output type is $\mathit{Option}\ \mathit{Plan}$;
+$\mathit{none}$ denotes explicit refusal.
 
-**Theorem 1 (`rewrite_sound`).** If
-$\texttt{rewrite}\ cat\ P\ prin\ q = \texttt{some}\ q'$, then for
-every column $c$ in $q'\!.\texttt{schema}\ cat$,
-$c \in P.\texttt{allowed}\ prin\ q.\texttt{touched}$. *Every
-column appearing in the rewritten plan's output schema is one the
-policy permits.*
+**Theorem 1 (output-column soundness, `rewrite_sound`).** For
+every $\mathit{cat}, P, p, q, q'$, if
+$\mathit{rewrite}\ \mathit{cat}\ P\ p\ q = \mathit{some}\ q'$,
+then for every column $c \in \sigma(q')$,
+$c \in P.\mathit{allowed}\ p\ \mathit{touched}(q)$.
 
-**Theorem 2 (`rewrite_filter_sound`).** Under the same accept
-hypothesis, every column read by a `Filter` predicate inside $q'$
-is policy-allowed. **Closes the side-channel** in which a
-principal who cannot *read* `ssn` could still filter on it.
+**Theorem 2 (filter-predicate soundness, `rewrite_filter_sound`).**
+Under the same hypothesis, every column read by a $\mathit{Filter}$
+predicate inside $q'$ is also in
+$P.\mathit{allowed}\ p\ \mathit{touched}(q)$. Theorems 1 and 2
+together rule out the side-channel in which a principal lacking
+read access to column $c$ uses it as a row selector without
+projecting it.
 
-**Theorem 3 (`rewrite_schema_subset`)** and **Theorem 4
-(`rewrite_no_new_columns`).** The rewriter only ever removes
-columns — never invents them.
+**Theorems 3 and 4 (`rewrite_schema_subset`,
+`rewrite_no_new_columns`).** The output schema is contained in
+the input schema. Equivalently, $c \notin \sigma(q)$ implies
+$c \notin \sigma(q')$.
 
-**Theorem 5 (`rewrite_idempotent`).** Rewriting twice admits the
-same column set. The rewriter is a closure operator on schemas.
+**Theorem 5 (idempotence, `rewrite_idempotent`).** If
+$\mathit{rewrite}\ \mathit{cat}\ P\ p\ q = \mathit{some}\ q'$ and
+$\mathit{rewrite}\ \mathit{cat}\ P\ p\ q' = \mathit{some}\ q''$,
+then $\sigma(q'') = \sigma(q')$ as sets. The rewriter is a
+closure operator on schemas.
 
-**Theorem 6 (`rewrite_monotone`).** If $P \subseteq P'$ (multiset
-inclusion on allowed columns), then the output schema under $P$ is
-contained in that under $P'$ — strengthening the policy can only
-widen the output.
+**Theorem 6 (monotonicity in the policy, `rewrite_monotone`).**
+If $P.\mathit{allowed}\ p\ r \subseteq P'.\mathit{allowed}\ p\ r$
+for every $p$ and $r$, then the output schema under $P$ is
+contained in the output schema under $P'$. Strengthening the
+policy can only widen the released set.
 
-**Theorem 7 (`rewrite_touched`).** `q'.touched = q.touched`.
-*Touched relation is preserved.*
+**Theorem 7 (touched-relation preservation, `rewrite_touched`).**
+$\mathit{touched}(q') = \mathit{touched}(q)$.
 
-**Theorem 8 (`rewrite_refuses_unknown`).** `cat q.touched = []`
-implies `rewrite ... = none`. **An unknown relation is never a
-silently empty schema** — explicit refusal protects against
-catalog drift attacks.
+**Theorem 8 (refusal under unknown relation,
+`rewrite_refuses_unknown`).** $\mathit{cat}\ \mathit{touched}(q) = []$
+implies $\mathit{rewrite}\ \mathit{cat}\ P\ p\ q = \mathit{none}$.
+A relation absent from the catalog is rejected explicitly rather
+than reduced to an empty output schema — relevant under catalog
+drift, where the physical store may diverge from the catalog.
 
-**Theorem 9 (`rewrite_refuses_forbidden_filter`).** If
-`c ∈ q.filterCols` and `c ∉ allow`, then `rewrite ... = none`.
-Companion to Theorem 2.
+**Theorem 9 (refusal under forbidden filter,
+`rewrite_refuses_forbidden_filter`).** If
+$c \in \mathit{filterCols}(q)$ and
+$c \notin P.\mathit{allowed}\ p\ \mathit{touched}(q)$, then
+$\mathit{rewrite}\ \mathit{cat}\ P\ p\ q = \mathit{none}$. The
+contrapositive of Theorem 2.
 
-`CheckAxioms.lean` reports per-theorem axiom dependencies. The set
-is bounded by `{propext, Quot.sound}` — Lean 4's built-in
-foundational axioms; two theorems (`rewrite_touched`,
-`rewrite_refuses_unknown`) depend on *no* axioms. There is no
-`sorry`, no user-supplied `axiom`.
+`CheckAxioms.lean` audits the axiom dependencies of each theorem.
+The set is bounded by $\{\texttt{propext}, \texttt{Quot.sound}\}$,
+Lean~4's foundational axioms; the proofs of `rewrite_touched` and
+`rewrite_refuses_unknown` depend on no axioms. No proof uses
+`sorry`, and no user-supplied `axiom` declarations are
+introduced.
 
 # Implementation and conformance testing
 
-The Rust prototype (`prototype/crates/postern-core`) mirrors the
-Lean types and `rewrite` literally. The conformance harness
-(`postern-diff`) reads a JSON corpus from `lake exe postern-corpus`
-and asserts:
+The Rust implementation in `prototype/crates/postern-core` mirrors
+the Lean types and the $\mathit{rewrite}$ function structurally.
+The conformance harness `postern-diff` consumes a JSON corpus
+emitted by `lake exe postern-corpus` and asserts three equalities
+per case: that the Rust outcome kind ($\mathit{accept}$ /
+$\mathit{refuse}$) matches the Lean reference; that, on accept,
+the rewritten plan, output schema, predicate read-set, and
+touched relation are structurally equal to the Lean reference;
+and that the input plan's $\mathit{filterCols}$ matches the Lean
+auxiliary, independent of the rewriter.
 
-1. Outcome kind (`accept` / `refuse`) matches.
-2. On accept: rewritten plan equals Lean's reference structurally;
-   so do `schema(cat)`, `filter_cols`, and `touched`.
-3. The input plan's `filter_cols` matches Lean's `Plan.filterCols`
-   (sanity-checks the IR helper independent of the rewriter).
+JSON-corpus conformance is preferred to Lean-to-Rust extraction
+on the grounds that the corpus interface is stable across
+compiler-version churn in both languages and that divergence
+manifests as a CI failure rather than a build failure.
 
-We chose JSON-corpus conformance over Lean → Rust extraction
-because the corpus interface is stable across compiler churn and
-surfaces divergence as a CI signal, not a build break.
+The corpus comprises 18 cases: seven behavioural cases drawn
+from the financial-institution scenario of §5, four refusal
+regressions for known attack shapes
+(filter-on-forbidden-column, unknown-relation, two nested
+forbidden-filter variants), and seven policy-language edge cases
+(empty policy, duplicate grants, catalog-absent columns,
+case-sensitive principal, trailing-whitespace principal,
+nonexistent project column, nested $\mathit{Project}$
+narrowing). All eighteen pass on the current Rust
+implementation.
 
-**Corpus shape.** 18 cases: 7 behavioural (the §5 demo), 4
-refusal regressions for known attacks, 7 policy-language edge
-cases (empty policy, duplicate grants, catalog-absent columns,
-case sensitivity, trailing-whitespace principal, nonexistent
-project column, nested Project narrowing). All 18 pass.
+# Evaluation: a financial institution with three principals
 
-# Demo: a financial institution with three departments
-
-Kaggle `transactions-fraud-datasets`. Policy in
-`scenarios/financial-institution/policy.postern`; the load-bearing
-rows:
+We evaluate the artifact on the Kaggle
+`transactions-fraud-datasets` schema. The policy is reproduced
+in `scenarios/financial-institution/policy.postern`; the
+principal cases are summarised below.
 
 | principal   | plan                                | outcome             | rewritten schema                       |
 | ----------- | ----------------------------------- | ------------------- | -------------------------------------- |
@@ -364,70 +463,102 @@ rows:
 | `Marketing` | `Scan users_data` (unknown prin.)   | accept              | `∅` (empty allow)                      |
 | `CRM`       | `Scan credit_bureau_imports`        | **refuse**          | — (unknown relation)                   |
 
-Each row is a corpus case; "refuse" rows exercise Theorems 8 / 9.
+Each row corresponds to a corpus case in the conformance harness;
+the rows annotated $\mathit{refuse}$ exercise Theorems 8 and 9 of
+§4.
 
 # Related work
 
-No prior system, to our knowledge, proves soundness of a
-plan-level rewriter for an LLM-agent-facing lakehouse. The closest
-landmarks:
+We are not aware of prior work that establishes a mechanised
+soundness theorem for a plan-level rewriter in an LLM-agent-
+facing lakehouse setting. The closest landmarks fall into four
+groups.
 
-- **Cedar** [@cedar2024] proves authorization-decision soundness
-  for per-call API authorization, also in Lean. The axis is
-  different: Cedar verifies "may this principal call read?",
-  Postern verifies "is the dataframe the executor sees contained
-  in what the policy permits?".
-- **SEAL** [@seal2023] gives capability-based enforcement at
-  runtime; the policy core itself is unverified. Postern is the
-  inverse — verified policy core, lighter runtime — and pairs with
-  biscuit [@biscuit] for capability distribution.
-- **Jeeves / Jacqueline** [@jeeves2012; @jacqueline2016] and the
-  faceted-execution line [@faceted-haskell] enforce IFC in ORM-
-  backed apps via a heavyweight faceted-value runtime. They
-  predate the LLM-agent threat model and ship no Lean artifact.
-- **Postgres RLS** [@rls-postgres] and **OPA / Rego** [@opa-rego]
-  are the deployed baselines. RLS is per-database with no formal
-  guarantee beyond `EXPLAIN`; OPA is general-purpose but does not
-  reason about query outputs.
-- **AgentDojo** [@agentdojo2024] and **CaMeL** [@camel2025] argue
-  for capability-flow defences against indirect prompt injection
-  at the *agent* layer. Postern is the complementary lake-side
-  enforcement point.
-- **Capture-checking for agent capabilities**
-  [@capabilities-agents-2026]. Odersky et al. propose Scala 3
-  capture-checking as a type-level "tactic" that makes capabilities
-  first-class program variables, so agent-emitted code cannot
-  exfiltrate data it doesn't hold a capability for. Stack-
-  complementary to Postern: their work bounds the agent's code,
-  ours bounds the plan at the gateway. The two layers compose
-  without re-verifying each other's TCB.
+*Verified authorization decision procedures.* Cedar
+[@cedar2024] formalises and proves the soundness of an
+authorization-decision function in Lean. The axis of
+verification differs from ours: Cedar establishes
+$\mathrm{authorize}(\mathit{request}) \in \{\mathit{allow},
+\mathit{deny}\}$ correctly classifies a per-call request,
+whereas we establish that the *output of a plan transformation*
+is contained in the policy-allowed set. The two are
+complementary; we adopt the Cedar style of Lean-mechanised
+denotational semantics for our policy.
+
+*Capability-based enforcement runtimes.* SEAL [@seal2023]
+provides capability-based access control for analytic
+workloads at the runtime level; the policy core is not
+mechanically verified. Our development is the dual: the policy
+core is verified, and the runtime is correspondingly lighter.
+Biscuit [@biscuit] provides the deployed capability-token
+distribution mechanism we assume on the front end.
+
+*Information-flow control for database-backed applications.*
+Jeeves [@jeeves2012], Jacqueline [@jacqueline2016], and the
+faceted-execution line [@faceted-haskell] enforce IFC inside
+ORM-backed applications using a faceted-value runtime
+discipline. They predate the LLM-agent threat model and do not
+target the lakehouse setting; we view them as the closest
+PL-side relatives of Layer 2 of our development.
+
+*Defences for LLM-agent prompt injection.* AgentDojo
+[@agentdojo2024] and CaMeL [@camel2025] develop capability-flow
+defences at the agent boundary. Our development is
+complementary: the rewriter of §3–§4 enforces a policy at the
+lake-facing boundary on plans; their constructions enforce
+analogous properties on the agent's own emitted code. Closest
+to our Layer 2 specifically, Odersky et al.
+[@capabilities-agents-2026] propose Scala~3 capture-checking as
+the type-level mechanism for tracking capabilities through
+agent code; we adapt the same intuition under Rust's weaker
+type-system commitments (§3).
+
+*Deployed alternatives we improve upon.* PostgreSQL row
+security policies [@rls-postgres] and equivalent CLS facilities
+require per-engine integration and do not compose across the
+heterogeneous ingest paths typical of lakehouse deployments.
+Open Policy Agent [@opa-rego] is general-purpose but does not
+reason about query outputs at the plan level. Tenant
+segregation forfeits cross-source analytics and is the silo
+case we discuss in §1.
 
 # Open challenges and future work
 
-The Lean spec is narrow on purpose. Three load-bearing extensions
-remain.
+Three extensions of the Lean development are the natural next
+research questions.
 
-1. **Joins under proof.** The IR is single-relation; the Rust impl
-   handles joins by per-leg rewriting but is not under proof. The
-   natural next theorem is
-   `rewrite_sound_join`: for `Join(q₁, q₂)`, the rewritten output
-   columns are contained in the union of per-leg allowed sets. The
-   hard case is the join-key leak — joining on `ssn` without
-   projecting it mirrors the filter side-channel and needs the
-   same join-key-coverage condition.
+*Cross-relation joins.* The Plan IR is single-relation. The
+Rust implementation handles joins by per-leg rewriting but the
+composition is not under proof. The conjecture is a theorem of
+the form
+$$
+  \mathit{rewrite\_sound\_join} :
+  \mathit{accept}(q_1) \wedge \mathit{accept}(q_2) \implies
+  \sigma(\mathit{rewrite}(\mathit{Join}(q_1, q_2))) \subseteq
+  \bigcup_i P.\mathit{allowed}\ p\ \mathit{touched}(q_i)
+$$
+on a Plan IR extended with a $\mathit{Join}$ constructor. The
+join-key leak — joining on a column $c$ without projecting it,
+which leaks $c$'s value distribution — mirrors the filter
+side-channel and admits the analogous coverage condition.
 
-2. **Aggregation, with a differential-privacy boundary.** A
-   principal may be allowed `SUM(amount)` without individual-row
-   visibility. Lifting the rewriter to aggregations is open; SEAL
-   and the faceted line [@seal2023; @faceted-haskell] are the
-   closest reference points.
+*Aggregation with a differential-privacy boundary.* A
+principal may be permitted to read $\mathrm{SUM}(\mathit{amount})$
+without permission to read individual rows. The rewriter
+extension here is straightforward in shape but admits a
+non-trivial soundness statement once the differential-privacy
+boundary is parameterised; SEAL [@seal2023] and the faceted
+line [@faceted-haskell] are the closest reference points.
 
-3. **Biscuit attenuation inside the proof.** The current Lean
-   spec sees a flat `principal : String`. Modelling biscuit's
-   Datalog-based attenuation, expiry, and audience checks inside
-   the proof lifts the principal-string-extraction row out of the
-   TCB. Catalog integrity, plan integrity in transit, and NL →
-   policy synthesis are further out but the same shape.
+*Capability attenuation inside the proof.* The Lean development
+takes $\mathit{Principal}$ as a flat string and assumes the
+gateway has already verified the bearer of a biscuit token.
+Modelling biscuit's Datalog-based attenuation, expiry, and
+audience checks inside the Lean proof lifts the principal-
+extraction row out of the trusted base — a substantial
+strengthening of the artifact's overall claim. Adjacent open
+problems include catalog-integrity attestation and plan-
+integrity in transit.
 
 # Reproducibility
 

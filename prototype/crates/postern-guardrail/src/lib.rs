@@ -4,92 +4,116 @@
 //! Inspired by **Odersky et al. 2026, "Tracking Capabilities for
 //! Safer Agents"** ([arXiv:2603.00991](https://arxiv.org/abs/2603.00991)),
 //! which uses Scala 3 capture-checking to make capabilities
-//! first-class program variables. Rust has no capture-checking; we
-//! mechanize the same intuition using *sealed types*: capabilities
-//! are unforgeable tokens minted only by the gateway, and data is
-//! wrapped in `Tagged<T, C>` whose inner value cannot be reached
-//! without consuming a matching `Cap<C>` at a sanctioned sink.
+//! first-class program variables. Rust has no capture-checking, so
+//! we mechanize the same intuition by **layering three additive
+//! pure-Rust constructions**, each closing one face of the gap.
 //!
-//! ## Two-layer model
+//! ## Three layered defenses
 //!
-//! 1. **`postern-core`** — verified plan rewriter. The Lean
-//!    theorems carry the read-side guarantee: every accepted plan's
-//!    output schema and filter-predicate read-set are
-//!    policy-allowed.
-//! 2. **`postern-guardrail`** *(this crate)* — capability-bounded
-//!    compute. Once the rewriter accepts, the resulting data is
-//!    handed to the agent as `Tagged<DataFrame, C>` along with a
-//!    single-use `Cap<C>`. Agent code can `map` / `filter` the
-//!    Tagged value as much as it likes — every transform preserves
-//!    the tag. The only un-tagging path is `release(cap)`, which
-//!    consumes the Cap; the gateway controls which Cap kinds get
-//!    issued and to whom.
+//! **(L1) Sealed Cap, private `Tagged::value`.**
+//! `Cap<'sc, C>` and `Tagged<'sc, T, C>` have private fields. The
+//! constructor is `pub(crate)`. Bypass attempts (forging a `Cap`,
+//! reading `Tagged::value` directly) are pinned as `compile_fail`
+//! doctests below.
 //!
-//! ## What this defends against
+//! **(L2) Invariant branded scope `'sc`.**
+//! Both `Cap` and `Tagged` carry a brand lifetime `'sc` made
+//! invariant via `PhantomData<fn(&'sc ()) -> &'sc ()>`. The only
+//! entry point is `run<T, C, R, F>(value, f) -> R` whose closure is
+//! universally quantified over `'sc` and whose return type is
+//! bounded `R: 'static`. Together these forbid the closure from
+//! returning anything that references `'sc`, so neither `Cap` nor
+//! `Tagged` can lexically escape the scope. (Same trick the
+//! `ghost-cell` crate uses for branded references.)
 //!
-//! - **Smuggle-via-format.** An agent receives `Tagged<String,
-//!   PiiRedacted>`, formats it into a panic message, and `panic!`s
-//!   to ship the string to an error sink. Defeated: the panic
-//!   message takes `&dyn Display`, not the raw `T` — the agent has
-//!   to compute on Tagged values, and `Tagged: Display` is *not*
-//!   implemented.
-//! - **Smuggle-via-globals.** An agent stashes the inner value in a
-//!   `static`. Defeated: the agent never holds the raw value to
-//!   stash; `Tagged<T, C>::value` is private.
-//! - **Forge-cap.** An agent constructs `Cap::<C>` directly.
-//!   Defeated: `Cap`'s constructor is `pub(crate)` and its inner
-//!   field is private. See `tests/ui/cap_construction.rs` for the
-//!   compile-fail demonstration.
-//! - **Sink-without-cap.** An agent calls a sanctioned sink without
-//!   holding a Cap. Defeated: sinks take `Cap<C>` by value.
+//! **(L3) Opaque-receipt sinks.**
+//! The agent has *no* public method that returns the raw `T`. The
+//! old `Tagged::release(cap) -> T` is removed. The only exits are
+//! `sinks::*` functions that consume both `Cap<'sc, C>` and
+//! `Tagged<'sc, T, C>` by value and return *opaque receipts*
+//! (`LlmAck`, `AuditAck`) that the agent cannot deconstruct. The
+//! sink itself performs the actual side-effect (call the LLM
+//! adapter, write the audit row) — the agent never sees `T` naked.
 //!
-//! ## What this does *not* defend against
+//! ## What this composition defends against
 //!
-//! Rust has no effect system. A capability-bearing agent can still:
-//! - Panic with a message constructed from a `Display`-implementing
-//!   *aggregate* of a Tagged value (we deliberately don't implement
-//!   `Display` for `Tagged`; the agent would have to implement it
-//!   themselves, which requires reading the inner value, which is
-//!   private — so this is closed *for our types*, but an unsealed
-//!   downstream type wrapping ours could leak).
-//! - Time-channel: measure how long a compute takes and signal
-//!   through that. Out of scope.
-//! - Steal capabilities from another thread via `Arc`/`Mutex`. We
-//!   make `Cap: !Send + !Sync` (via `PhantomData<*const ()>`) to
-//!   prevent the obvious cross-thread move.
+//! - **Forge a `Cap`.** Sealed inner field — `compile_fail`.
+//! - **Read `Tagged::value` directly.** Private field — `compile_fail`.
+//! - **Stash `Cap` or `Tagged` in a `static` / pass to another scope.**
+//!   The brand `'sc` is invariant and existentially quantified;
+//!   the outer return bound `R: 'static` prevents any escape route.
+//!   `compile_fail` if attempted.
+//! - **Re-use a `Cap` for two sinks.** `Cap` is consumed by value
+//!   at the first sink; the move is enforced by ownership.
+//! - **Drop into a separate thread to bypass scoping.** `Cap` and
+//!   `Tagged` are `!Send + !Sync` via the `*const ()` phantom.
+//! - **Mint a `Tagged` from an arbitrary `T` outside the gateway.**
+//!   `Tagged::mint` is `pub(crate)`; downstream code cannot call it.
 //!
-//! See paper §3 "Defense-in-depth with capability tracking" and
-//! §6 (future work) for the limits and the path to a stronger
-//! Rust analog (e.g., a custom lint or `unsafe`-style markers).
-
+//! ## What it does *not* defend against (residual)
 //!
-//! ## Compile-time bypass demonstration
+//! Inside a `map` / `and_then` closure body, the agent has
+//! temporary access to `T`. Rust has no effect system, so they can
+//! technically:
 //!
-//! Forging a `Cap` does not type-check — the inner field is sealed:
+//! - Side-channel via `panic!` (we deliberately do not implement
+//!   `Debug` / `Display` for `Tagged`, and the closure can't take
+//!   `&T` past its own scope, but `panic!`-with-formatted-string
+//!   reachable inside the closure body is out of scope here).
+//! - Time-channel by measuring compute duration.
+//! - Stash a copy of `T` in a thread-local / `static` if `T: 'static`.
+//!
+//! Closing these requires either an effect system (which Rust
+//! lacks) or a sandbox (Wasm, `seccomp`, ...). The strongest
+//! pure-Rust analog is to compile the agent crate as `#![no_std]`
+//! against a curated prelude that doesn't expose `panic_handler`,
+//! `println!`, or other side-effect sinks; we demonstrate this in
+//! `tests/no_std_agent.rs`, where the agent uses our API to
+//! compute and ship a value through the only available sink, and
+//! the test would not link if the agent tried to call `std::*`.
+//!
+//! ## Compile-time bypass demonstrations
+//!
+//! Forging a `Cap` does not type-check — the inner `Sealed` field
+//! is private:
 //!
 //! ```compile_fail,E0451
 //! use postern_guardrail::Cap;
 //! struct Anything;
-//! // Compile error: cannot construct Cap, its `Sealed` field is private.
-//! let _bypass: Cap<Anything> = Cap { _kind: std::marker::PhantomData, _seal: () };
+//! let _: Cap<'static, Anything> = Cap {
+//!     _kind: core::marker::PhantomData,
+//!     _seal: (),
+//! };
 //! ```
 //!
-//! Reading the inner `value` of a `Tagged` does not type-check either:
+//! Reading the inner `value` of a `Tagged` does not type-check:
 //!
 //! ```compile_fail,E0616
 //! use postern_guardrail::Tagged;
-//! fn leak<T, C: 'static>(t: Tagged<T, C>) -> T { t.value }
-//! //                                              ^^^^^^^ field is private
+//! fn leak<'sc, T, C: 'static>(t: Tagged<'sc, T, C>) -> T { t.value }
+//! ```
+//!
+//! Escaping `Cap` from the branded scope does not type-check
+//! (the closure return type cannot reference `'sc`):
+//!
+//! ```compile_fail
+//! use postern_guardrail::{run, Cap};
+//! struct Demo;
+//! // Try to return a Cap<'sc, Demo>; R: 'static forbids it.
+//! let _: Cap<'static, Demo> = run::<i64, Demo, _, _>(42, |cap, _t| cap);
 //! ```
 
+#![cfg_attr(not(test), no_std)]
 #![warn(missing_docs)]
 #![forbid(unsafe_code)]
 
-use std::marker::PhantomData;
+extern crate alloc;
 
-/// Internal sealing — only this crate can construct a token, so any
-/// type embedding `Sealed` cannot be re-implemented or constructed
-/// downstream.
+use core::marker::PhantomData;
+
+/// Internal sealing marker — only this crate can construct one, so
+/// any type embedding `Sealed` cannot be re-implemented or
+/// constructed by downstream crates.
 #[doc(hidden)]
 pub struct Sealed(PhantomData<*const ()>);
 
@@ -99,216 +123,339 @@ impl Sealed {
     }
 }
 
-/// `Cap<C>` — an unforgeable capability token tagged by the
-/// phantom type `C`. The inner `Sealed` is private; the constructor
-/// is `pub(crate)`; `!Send + !Sync` via the raw-pointer phantom.
+/// Invariant brand for a scope.
 ///
-/// To consume a Cap at a sanctioned sink, take it by value; the
-/// move makes it single-use, mirroring linear-type "consumable"
-/// capabilities.
-pub struct Cap<C: 'static> {
+/// `PhantomData<fn(&'sc ()) -> &'sc ()>` is invariant in `'sc`, so
+/// scopes with different brand lifetimes do not subtype-unify. This
+/// is the `ghost-cell` pattern: each call to `run` instantiates a
+/// fresh `'sc` that cannot be confused with any other.
+pub struct Brand<'sc>(PhantomData<fn(&'sc ()) -> &'sc ()>);
+
+impl<'sc> Brand<'sc> {
+    pub(crate) fn new() -> Self {
+        Brand(PhantomData)
+    }
+}
+
+/// `Cap<'sc, C>` — unforgeable, single-use capability token tagged
+/// by phantom kind `C` and branded by scope `'sc`. `!Send + !Sync`
+/// via the `*const ()` phantom inside `Sealed`.
+pub struct Cap<'sc, C: 'static> {
+    _brand: Brand<'sc>,
     _kind: PhantomData<C>,
     _seal: Sealed,
 }
 
-impl<C: 'static> Cap<C> {
-    /// Mint a capability. Visible only to this crate plus the
-    /// `issue` function below; downstream callers cannot construct.
+impl<'sc, C: 'static> Cap<'sc, C> {
     pub(crate) fn mint() -> Self {
         Cap {
+            _brand: Brand::new(),
             _kind: PhantomData,
             _seal: Sealed::new(),
         }
     }
 }
 
-/// `Tagged<T, C>` — data plus the capability needed to release it.
+/// `Tagged<'sc, T, C>` — data plus the capability needed to
+/// release it. Branded by scope `'sc`; the only sanctioned compute
+/// operations are `map` and `and_then`, both of which preserve the
+/// brand and the kind.
 ///
-/// Sanctioned operations:
-///
-/// - [`Tagged::map`] — pure transformation `T → U`, tag preserved.
-/// - [`Tagged::and_then`] — flat-map producing another `Tagged<U, C>`.
-/// - [`Tagged::release`] — consume a `Cap<C>` to release the inner
-///   value at a sanctioned sink.
-///
-/// No `Deref`, no `Display`, no `AsRef`, no public `.value` accessor.
-/// The only paths out are `map`/`and_then` (which return another
-/// Tagged) and `release` (which consumes a Cap).
-pub struct Tagged<T, C: 'static> {
+/// There is no public `release(cap) -> T` — extraction happens only
+/// through `sinks::*`, which consume both this `Tagged` and a
+/// matching `Cap` and return an *opaque receipt*. The agent never
+/// holds raw `T` past a `map` closure body.
+pub struct Tagged<'sc, T, C: 'static> {
     value: T,
+    _brand: Brand<'sc>,
     _kind: PhantomData<C>,
 }
 
-impl<T, C: 'static> Tagged<T, C> {
+impl<'sc, T, C: 'static> Tagged<'sc, T, C> {
     pub(crate) fn mint(value: T) -> Self {
         Tagged {
             value,
+            _brand: Brand::new(),
             _kind: PhantomData,
         }
     }
 
-    /// Pure transformation. Tag preserved.
+    /// Extract the inner value. `pub(crate)` — only sinks defined
+    /// in this crate may call this.
+    pub(crate) fn into_value(self) -> T {
+        self.value
+    }
+
+    /// Pure transformation. Brand and kind preserved.
+    ///
+    /// The closure receives `T` by value (consuming the inner
+    /// value); whatever it returns is re-wrapped as
+    /// `Tagged<'sc, U, C>` so the brand is never lost.
     #[must_use]
-    pub fn map<U, F>(self, f: F) -> Tagged<U, C>
+    pub fn map<U, F>(self, f: F) -> Tagged<'sc, U, C>
     where
         F: FnOnce(T) -> U,
     {
         Tagged {
             value: f(self.value),
+            _brand: self._brand,
             _kind: PhantomData,
         }
     }
 
-    /// Sequenced computation. Returns another `Tagged<U, C>` so
-    /// the agent can build up a pipeline without ever holding the
-    /// raw value.
+    /// Sequenced computation. Allows the agent to chain compute
+    /// steps without ever holding the raw value across a step.
     #[must_use]
-    pub fn and_then<U, F>(self, f: F) -> Tagged<U, C>
+    pub fn and_then<U, F>(self, f: F) -> Tagged<'sc, U, C>
     where
-        F: FnOnce(T) -> Tagged<U, C>,
+        F: FnOnce(T) -> Tagged<'sc, U, C>,
     {
         f(self.value)
     }
+}
 
-    /// Release the inner value at a sanctioned sink. Consumes the
-    /// matching `Cap<C>` — single-use. Caller must hold a Cap of
-    /// the right kind to call this; capabilities cannot be forged.
-    #[must_use]
-    pub fn release(self, _cap: Cap<C>) -> T {
-        self.value
+/// Enter a fresh capability scope.
+///
+/// The closure is **universally quantified over `'sc`**, so its
+/// body cannot bake in a particular outer lifetime; combined with
+/// the **`R: 'static`** outer bound, this forbids the closure from
+/// returning anything that mentions `'sc` (including `Cap<'sc, _>`
+/// or `Tagged<'sc, _, _>`). Lexical escape of capability tokens
+/// out of the scope is therefore a compile error.
+///
+/// The closure receives a fresh `Cap<'sc, C>` together with a
+/// `Tagged<'sc, T, C>` wrapping the provided `value`. The only
+/// public exits for `T` are the `sinks::*` functions, which
+/// consume both the `Cap` and the `Tagged`.
+pub fn run<T, C, R, F>(value: T, f: F) -> R
+where
+    F: for<'sc> FnOnce(Cap<'sc, C>, Tagged<'sc, T, C>) -> R,
+    R: 'static,
+    C: 'static,
+{
+    f(Cap::mint(), Tagged::mint(value))
+}
+
+/// Sanctioned sinks. Each consumes both the `Cap` and the
+/// `Tagged`; each returns an *opaque receipt* (not `T`). The
+/// receipt is the agent's evidence that the value was shipped; it
+/// reveals nothing about the value itself.
+pub mod sinks {
+    use super::{Cap, Tagged};
+    use alloc::string::String;
+
+    /// Receipt from the LLM sink — opaque to the agent.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct LlmAck {
+        /// Length of the serialized payload that was shipped.
+        /// Disclosed because length is observable to the LLM
+        /// anyway; the inner value is not.
+        pub bytes: usize,
+    }
+
+    /// Receipt from the audit-log sink — opaque to the agent.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct AuditAck {
+        /// Number of bytes recorded.
+        pub bytes: usize,
+    }
+
+    /// Ship a value to the LLM channel. The caller supplies a
+    /// `serialize` closure that converts `T` to a `String` payload
+    /// — but the serialised payload never returns to the agent;
+    /// the sink consumes it and returns only `LlmAck`.
+    ///
+    /// In a real deployment, the `send` step would be a private
+    /// gateway-side channel (HTTPS to the LLM, gRPC to a router);
+    /// here we model only the receipt.
+    pub fn to_llm<'sc, T, C: 'static, S>(
+        _cap: Cap<'sc, C>,
+        data: Tagged<'sc, T, C>,
+        serialize: S,
+    ) -> LlmAck
+    where
+        S: FnOnce(T) -> String,
+    {
+        let payload = serialize(data.into_value());
+        LlmAck {
+            bytes: payload.len(),
+        }
+    }
+
+    /// Ship a value to the audit log. Same shape as `to_llm`;
+    /// receipt is opaque.
+    pub fn to_audit<'sc, T, C: 'static, S>(
+        _cap: Cap<'sc, C>,
+        data: Tagged<'sc, T, C>,
+        serialize: S,
+    ) -> AuditAck
+    where
+        S: FnOnce(T) -> String,
+    {
+        let payload = serialize(data.into_value());
+        AuditAck {
+            bytes: payload.len(),
+        }
     }
 }
 
-/// Issue a Tagged data value and its matching single-use Cap.
-/// Visible to the gateway driver only — `pub(crate)` plus a
-/// `pub` re-export through `gateway::issue` that does the policy
-/// check.
-pub(crate) fn issue<T, C: 'static>(value: T) -> (Tagged<T, C>, Cap<C>) {
-    (Tagged::mint(value), Cap::mint())
-}
-
-/// Gateway-side entry point. Combines the verified rewrite from
-/// `postern-core` with capability issuance: if the rewrite
-/// accepts, return a `Tagged<Plan, AllowedColumns>` plus a single-
-/// use `Cap<AllowedColumns>`; if it refuses, return `None`.
+/// Gateway-side entry point. Combines the Lean-verified rewrite
+/// from `postern-core` with capability issuance: if the rewrite
+/// accepts, the closure receives a `Cap<'sc, AllowedColumns>` and
+/// a `Tagged<'sc, Plan, AllowedColumns>` wrapping the rewritten
+/// plan; if it refuses, returns `None` without invoking the
+/// closure.
 ///
-/// `AllowedColumns` is a phantom marker — in a full deployment we
-/// would parameterize over a refinement of the principal +
-/// touched-relation so that different (principal, relation) pairs
-/// produce structurally distinct capabilities. The 0.1 demo uses a
-/// single marker to make the API legible.
+/// **Behind the `gateway` feature flag** (on by default). This is
+/// the only module that depends on `postern-core` and therefore
+/// the only one that pulls in `std`. A downstream agent crate
+/// wanting to be `#![no_std]` should depend on this crate with
+/// `default-features = false`; the agent then has access to
+/// `Cap`, `Tagged`, `run`, and `sinks` (all `no_std`-clean) but
+/// not the gateway integration — which is the right partition,
+/// because the gateway is the host-side issuer, not agent code.
+#[cfg(feature = "gateway")]
 pub mod gateway {
-    use super::{issue, Cap, Tagged};
+    use super::{run, Cap, Tagged};
     use postern_core::{rewrite, Catalog, Plan, Policy};
 
-    /// Phantom marker: "this value is the rewriter's accepted
-    /// output for some (principal, plan) pair on this catalog".
-    /// Different deployments can parameterize over a more refined
-    /// witness type (per-principal, per-relation, per-session).
+    /// Phantom marker — "this `Tagged` is the rewriter's accepted
+    /// output for some (principal, plan) pair". A full deployment
+    /// would refine this with witness types for the principal and
+    /// the touched relation; the 0.1 demo uses a single marker for
+    /// API legibility.
     pub struct AllowedColumns;
 
-    /// Run the verified rewriter, and if it accepts, mint a Tagged
-    /// plan plus its matching single-use Cap.
-    ///
-    /// Returns `None` iff the rewriter refused
-    /// (`rewrite_refuses_unknown` or `rewrite_refuses_forbidden_filter`).
-    /// The Lean theorems on the Plan side carry the read-side
-    /// guarantee; this function is the bridge to the capability-
-    /// bounded compute layer.
-    #[must_use]
-    pub fn issue_plan(
+    /// Run the verified rewriter; if it accepts, enter a fresh
+    /// scope with the agent closure. Returns `None` iff
+    /// `postern_core::rewrite` returned `None` (unknown relation
+    /// or filter on a forbidden column — closed by Lean theorems
+    /// `rewrite_refuses_unknown` and
+    /// `rewrite_refuses_forbidden_filter`).
+    pub fn with_plan<R, F>(
         cat: &Catalog,
         pol: &Policy,
         prin: &str,
         plan: &Plan,
-    ) -> Option<(Tagged<Plan, AllowedColumns>, Cap<AllowedColumns>)> {
-        rewrite(cat, pol, prin, plan).map(issue)
+        f: F,
+    ) -> Option<R>
+    where
+        F: for<'sc> FnOnce(
+            Cap<'sc, AllowedColumns>,
+            Tagged<'sc, Plan, AllowedColumns>,
+        ) -> R,
+        R: 'static,
+    {
+        let rewritten = rewrite(cat, pol, prin, plan)?;
+        Some(run(rewritten, f))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::format;
+    use alloc::string::String;
+    use alloc::vec;
     use postern_core::{Catalog, Grant, Plan, Policy};
 
     struct Demo;
 
     fn cat() -> Catalog {
-        Catalog::from_entries([("users_data", vec!["id", "name", "email", "ssn", "region"])])
+        Catalog::from_entries([(
+            "users_data",
+            vec!["id", "name", "email", "ssn", "region"],
+        )])
     }
 
     fn pol() -> Policy {
-        Policy::from_grants([Grant::new("CRM", "users_data", ["id", "name", "region"])])
+        Policy::from_grants([Grant::new(
+            "CRM",
+            "users_data",
+            ["id", "name", "region"],
+        )])
     }
 
     #[test]
-    fn legal_flow_release_with_cap() {
-        let (tagged, cap) = issue::<i64, Demo>(42);
-        let v: i64 = tagged.release(cap);
-        assert_eq!(v, 42);
+    fn run_scope_sinks_value_to_llm() {
+        let ack: sinks::LlmAck = run::<i64, Demo, _, _>(42, |cap, tagged| {
+            // Map preserves the brand; the agent can compute
+            // arbitrarily but cannot escape the scope.
+            let processed = tagged.map(|n| n * 2);
+            sinks::to_llm(cap, processed, |n| format!("{n}"))
+        });
+        assert_eq!(ack.bytes, 2); // "84"
     }
 
     #[test]
-    fn map_preserves_tag() {
-        let (tagged, cap) = issue::<i64, Demo>(42);
-        let mapped: Tagged<String, Demo> = tagged.map(|n| n.to_string());
-        let s: String = mapped.release(cap);
-        assert_eq!(s, "42");
+    fn run_scope_returns_only_static_receipt() {
+        // The closure's return type R must be 'static; the receipt
+        // is `Copy + 'static`, so we can also return e.g. a usize.
+        let bytes: usize = run::<String, Demo, _, _>(String::from("hello"), |cap, t| {
+            sinks::to_audit(cap, t, |s| s).bytes
+        });
+        assert_eq!(bytes, 5);
     }
 
     #[test]
-    fn and_then_preserves_tag() {
-        let (tagged, cap) = issue::<i64, Demo>(7);
-        let result = tagged
-            .map(|n| n * 2)
-            .and_then(|n| Tagged::mint(format!("doubled: {n}")))
-            .release(cap);
-        assert_eq!(result, "doubled: 14");
+    fn map_and_then_chain() {
+        let ack = run::<i64, Demo, _, _>(7, |cap, t| {
+            let chained = t
+                .map(|n| n + 1)
+                .and_then(|n| {
+                    // re-wrap inside the same brand
+                    let intermediate = format!("step1: {n}");
+                    Tagged::mint(intermediate)
+                })
+                .map(|s| format!("step2: {s}"));
+            sinks::to_llm(cap, chained, |s| s)
+        });
+        // "step2: step1: 8" — length 15
+        assert_eq!(ack.bytes, 15);
     }
 
     #[test]
-    fn gateway_accepts_legal_plan_and_mints_cap() {
-        let plan = Plan::scan("users_data");
-        let issued = gateway::issue_plan(&cat(), &pol(), "CRM", &plan);
-        let (tagged_plan, cap) = issued.expect("CRM scan of users_data accepts");
-
-        // Agent transforms the plan (e.g., to a Polars LazyFrame),
-        // tag is preserved through every step.
-        let plan_as_string = tagged_plan.map(|p| format!("{p:?}"));
-
-        // Final release at the sanctioned sink consumes the Cap.
-        let serialized: String = plan_as_string.release(cap);
-        assert!(serialized.contains("users_data"));
+    #[cfg(feature = "gateway")]
+    fn gateway_accepts_legal_plan_runs_scope() {
+        let ack = gateway::with_plan(
+            &cat(),
+            &pol(),
+            "CRM",
+            &Plan::scan("users_data"),
+            |cap, tagged_plan| {
+                sinks::to_llm(cap, tagged_plan, |p| format!("{p:?}"))
+            },
+        )
+        .expect("CRM scan accepted");
+        assert!(ack.bytes > 0);
     }
 
     #[test]
-    fn gateway_refuses_unknown_relation_no_cap_issued() {
-        // unknown relation ⇒ rewriter refuses ⇒ no Tagged, no Cap.
-        let plan = Plan::scan("payroll_data");
-        let issued = gateway::issue_plan(&cat(), &pol(), "CRM", &plan);
-        assert!(
-            issued.is_none(),
-            "no Cap should be minted for refused plans"
+    #[cfg(feature = "gateway")]
+    fn gateway_refuses_unknown_relation_no_scope_entered() {
+        // Closure is never invoked when the rewriter refuses.
+        let result = gateway::with_plan(
+            &cat(),
+            &pol(),
+            "CRM",
+            &Plan::scan("payroll_data"),
+            |_cap, _t| -> sinks::LlmAck {
+                panic!("closure must not run when rewriter refuses")
+            },
         );
+        assert!(result.is_none());
     }
 
     #[test]
+    #[cfg(feature = "gateway")]
     fn gateway_refuses_filter_on_forbidden_column() {
-        let plan = Plan::filter(Plan::scan("users_data"), "ssn");
-        let issued = gateway::issue_plan(&cat(), &pol(), "CRM", &plan);
-        assert!(
-            issued.is_none(),
-            "filter on ssn must refuse; agent never receives a Cap"
+        let result = gateway::with_plan(
+            &cat(),
+            &pol(),
+            "CRM",
+            &Plan::filter(Plan::scan("users_data"), "ssn"),
+            |_cap, _t| -> sinks::LlmAck { panic!("must not run") },
         );
-    }
-
-    #[test]
-    fn cap_is_single_use() {
-        // The Cap is consumed by `release` — the type system
-        // enforces this. A second `release` call won't compile
-        // because the Cap has moved.
-        let (tagged, cap) = issue::<i64, Demo>(1);
-        let _ = tagged.release(cap);
-        // tagged.release(cap);  // <- compile error: use of moved value
+        assert!(result.is_none());
     }
 }
