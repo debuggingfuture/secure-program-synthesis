@@ -6,35 +6,42 @@ author:
 abstract: |
   We address access control for data lakehouses queried by LLM
   agents. Row- and column-level security in ACID-class databases
-  does not transfer to this setting — enforcement is per-engine
-  and per-source policies do not compose across heterogeneous
-  ETL paths — and the deployed alternative, physical tenant
-  segregation, recovers safety only by forfeiting the
-  cross-source analytics that motivate the lakehouse. We propose
-  plan-level rewriting against a column-grant policy and present
-  **Postern**, an artifact in three parts. The first is a Plan
-  IR and policy DSL with a rewriter
+  does not transfer to this setting — per-source policies do not
+  compose across heterogeneous ETL paths — and the deployed
+  alternative, physical tenant segregation, recovers safety only
+  by forfeiting the cross-source joins that motivate the
+  lakehouse. When upstream ACLs collapse to a single ingest IAM
+  role at materialisation, an indirect-prompt-injected agent
+  inherits the *union* of the upstream principals' permissions
+  rather than the *intersection* under the querying identity. We
+  propose plan-level rewriting against a **Biscuit-Datalog**
+  policy [@biscuit] and present **Postern**, an artifact in
+  three parts. The first is a Plan IR and a column-grant surface
+  syntax that compiles to ground `right(principal, relation,
+  column)` facts in the Horn fragment, with a rewriter
   $\mathrm{rewrite} : \mathit{Catalog} \to \mathit{Policy} \to
   \mathit{Principal} \to \mathit{Plan} \to \mathit{Option}\
-  \mathit{Plan}$, mechanised in Lean~4; nine theorems are proved
-  without `sorry`, establishing output-column soundness,
-  filter-predicate soundness, idempotence, monotonicity in the
-  policy, and explicit refusal for unknown relations and for
-  filter predicates over forbidden columns, with per-theorem
-  axiom dependencies audited and bounded by `propext` and
-  `Quot.sound`. The second is a Rust capability-tracking layer
-  inspired by Odersky et al.'s capture-checking proposal
-  [@capabilities-agents-2026], constraining the agent's
-  downstream computation through an invariant brand lifetime,
+  \mathit{Plan}$ mechanised in Lean~4 [@lean4]. Nine rewriter
+  theorems are proved without `sorry` — output-column and
+  filter-predicate soundness, idempotence, policy monotonicity,
+  schema subset, two no-new-column lemmas, and two refusal
+  lemmas — with axioms bounded by `propext` and `Quot.sound`.
+  The underlying Horn-fragment Datalog evaluator is partly
+  mechanised: `eval_monotone` holds modulo one isolated
+  obligation on `List.eraseDups.length`, while `eval_sound` and
+  `eval_terminates` carry `sorryAx` obligations named in
+  `CheckAxioms.lean`. The second component is a Rust
+  capability-tracking layer inspired by Odersky et
+  al. [@capabilities-agents-2026]: invariant brand lifetimes,
   sealed types, and opaque-receipt sinks. The third is a
   reference-conformance harness asserting byte-equivalence
-  between the Rust implementation and the Lean reference on a
-  corpus of 18 hand-curated cases (15 accept, 3 refusal). We
-  evaluate on a financial-institution scenario over the Kaggle
-  `transactions-fraud-datasets` and identify cross-relation
-  joins under proof, aggregation with a differential-privacy
-  boundary, and capability attenuation inside the Lean theorems
-  as the principal open problems.
+  between the Rust rewriter and the Lean reference on 18 cases;
+  migrating the gateway to consume `biscuit_auth::datalog::World`
+  directly is in progress. We evaluate on the Kaggle
+  `transactions-fraud-datasets` schema and identify Biscuit
+  attenuation, audience, expiry, and key rotation; cross-relation
+  joins; and differentially-private aggregation as the principal
+  open problems.
 keywords:
   - access control
   - formal verification
