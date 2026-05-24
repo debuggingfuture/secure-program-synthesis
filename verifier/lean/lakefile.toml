@@ -1,8 +1,11 @@
 name = "postern"
-defaultTargets = ["Postern", "CheckAxioms"]
+defaultTargets = ["Postern", "Datalog", "CheckAxioms"]
 
 [[lean_lib]]
 name = "Postern"
+
+[[lean_lib]]
+name = "Datalog"
 
 [[lean_lib]]
 name = "CheckAxioms"
