@@ -4,40 +4,37 @@ subtitle: "Secure Program Synthesis Hackathon 2026 — Track 3 research artifact
 author:
   - name: FractalBox
 abstract: |
-  Row- and column-level access control (RLS/CLS) as offered by
-  ACID-class transactional databases is not directly transferable
-  to columnar lakehouses: enforcement is per-engine, and
-  per-source policies do not compose across heterogeneous ETL
-  paths. Tenant segregation — the deployed alternative — eliminates
-  the difficulty by construction, at the cost of partitioning
-  cross-tenant queries into disjoint data silos. We study a third
-  point in this design space, *plan-level rewriting with
-  mechanised soundness*, and present **Postern**, a column-grant
-  access gateway for agentic data lakehouses. The artifact
-  comprises three components. (i) A Plan IR
-  ($\mathit{Scan}$ / $\mathit{Project}$ / $\mathit{Filter}$) and
-  policy DSL with a rewriter
+  We address access control for data lakehouses queried by LLM
+  agents. Row- and column-level security in ACID-class databases
+  does not transfer to this setting — enforcement is per-engine
+  and per-source policies do not compose across heterogeneous
+  ETL paths — and the deployed alternative, physical tenant
+  segregation, recovers safety only by forfeiting the
+  cross-source analytics that motivate the lakehouse. We propose
+  plan-level rewriting against a column-grant policy and present
+  **Postern**, an artifact in three parts. The first is a Plan
+  IR and policy DSL with a rewriter
   $\mathrm{rewrite} : \mathit{Catalog} \to \mathit{Policy} \to
-  \mathit{Principal} \to \mathit{Plan} \to \mathit{Option}\ \mathit{Plan}$,
-  mechanised in Lean~4. Nine theorems are proved without `sorry`
-  and audited for axiom dependencies (bounded by `propext` and
-  `Quot.sound`); the principal theorems establish output-column
-  soundness, filter-predicate soundness, idempotence, monotonicity
-  in the policy, and explicit refusal for unknown relations and
-  forbidden filter columns. (ii) A Rust capability-tracking
-  layer, inspired by Odersky et al.'s
-  capture-checking proposal [@capabilities-agents-2026], that
-  bounds what the agent's code may do with values the rewriter
-  releases; the bound is enforced by an invariant brand lifetime
-  combined with sealed types and opaque-receipt sinks. (iii) A
-  reference-conformance harness that asserts byte-equivalence
+  \mathit{Principal} \to \mathit{Plan} \to \mathit{Option}\
+  \mathit{Plan}$, mechanised in Lean~4; nine theorems are proved
+  without `sorry`, establishing output-column soundness,
+  filter-predicate soundness, idempotence, monotonicity in the
+  policy, and explicit refusal for unknown relations and for
+  filter predicates over forbidden columns, with per-theorem
+  axiom dependencies audited and bounded by `propext` and
+  `Quot.sound`. The second is a Rust capability-tracking layer
+  inspired by Odersky et al.'s capture-checking proposal
+  [@capabilities-agents-2026], constraining the agent's
+  downstream computation through an invariant brand lifetime,
+  sealed types, and opaque-receipt sinks. The third is a
+  reference-conformance harness asserting byte-equivalence
   between the Rust implementation and the Lean reference on a
-  hand-curated corpus of 18 cases (15 accept, 3 refusal). We
-  evaluate the artifact on a financial-institution scenario over
-  the Kaggle `transactions-fraud-datasets`, and identify three
-  open problems: cross-relation joins under proof, aggregation
-  with a differential-privacy boundary, and capability
-  attenuation modelled inside the Lean theorems.
+  corpus of 18 hand-curated cases (15 accept, 3 refusal). We
+  evaluate on a financial-institution scenario over the Kaggle
+  `transactions-fraud-datasets` and identify cross-relation
+  joins under proof, aggregation with a differential-privacy
+  boundary, and capability attenuation inside the Lean theorems
+  as the principal open problems.
 keywords:
   - access control
   - formal verification
@@ -63,30 +60,19 @@ mechanisms were not designed to answer.
 
 ## Existing approaches
 
-We summarise the two responses currently deployed in production,
-and the limitation each one accepts.
-
-**Row- and column-level security inside ACID-class databases.**
-PostgreSQL row security policies [@rls-postgres] and equivalents
-in other transactional engines bind authorization predicates to
-relations inside one engine instance. In a lakehouse setting
-they are not directly applicable. Parquet is engine-agnostic;
-DuckDB exposes no RLS surface; and policies expressed in the
-upstream engine do not survive the ETL transformation, because
-the catalog of the downstream store is structurally distinct from
-that of the source. Reconstructing equivalent restrictions
-external to the originating RDBMS demands per-engine adapters and
-per-source policy duplication, which historically scales poorly
-with the number of sources and the rate of policy churn.
-
-**Tenant segregation.** Where the previous approach fails,
-deployments default to *physical* partitioning: per-tenant or
-per-department object-storage prefixes queried by disjoint engine
-instances. The arrangement enforces the per-source perimeter by
-absence rather than by construction, and forfeits the lakehouse's
-primary technical motivation — joins and aggregations across
-sources that were previously siloed. The result is a data silo
-under the lakehouse label.
+Two responses dominate current deployments. Row- and
+column-level security in ACID-class databases such as PostgreSQL
+[@rls-postgres] binds authorization predicates to relations
+within a single engine; the policies do not survive the ETL
+transformation into an engine-agnostic Parquet store, and
+reconstructing them externally demands per-source policy
+duplication that scales poorly with source count and policy
+churn. The deployed alternative — physical tenant segregation
+across object-storage prefixes queried by disjoint engine
+instances — enforces the per-source perimeter by absence,
+forfeiting the cross-source joins that motivate the lakehouse to
+begin with. Neither approach offers a compositional authorization
+guarantee over heterogeneous ingest.
 
 ## A property gap
 
