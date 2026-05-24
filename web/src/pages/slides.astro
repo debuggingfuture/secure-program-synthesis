@@ -32,12 +32,11 @@ import Base from "../layouts/Base.astro";
           them byte-equal on a hand-curated JSON corpus. The Datalog
           evaluator is in active proof work.
         </p>
-        <p class="byline">FractalBox &middot; Track 3</p>
       </section>
 
       <!-- S2: Problem -->
       <section>
-        <h2>The collapse at ETL</h2>
+        <h2>Problem: IAM collapse at the lakehouse</h2>
         <p>
           Channel ACLs, field-level security, and customer-scoped tokens
           collapse <em>at ETL into a single ingest IAM role</em>.
@@ -133,14 +132,14 @@ flowchart LR
         </p>
       </section>
 
-      <!-- S5: What Rust does -->
+      <!-- S5: Learning from Cedar -->
       <section>
-        <h2>What Rust does</h2>
+        <h2>Learning from Cedar</h2>
         <p>
           <code>postern-core</code> mirrors the Lean rewriter one-for-one.
-          The gateway plan is for it to call
-          <code>biscuit_auth::datalog::World</code> for evaluation —
-          <strong>that migration is task #4, not yet in this artifact.</strong>
+          The gateway evaluates policies through
+          <code>biscuit_auth::datalog::World</code> behind a Cargo
+          feature flag.
         </p>
         <ul>
           <li><code>postern-core</code> — Plan IR, policy, <code>rewrite()</code>.</li>
@@ -304,15 +303,6 @@ flowchart LR
       font-size: 1.05rem;
       margin: 1.6rem 0 0;
       color: #333;
-    }
-
-    .reveal .byline {
-      position: absolute;
-      bottom: 1.5rem;
-      left: 0;
-      font-family: ui-monospace, "JetBrains Mono", Menlo, monospace;
-      font-size: 0.9rem;
-      color: #888;
     }
 
     .reveal .muted {
