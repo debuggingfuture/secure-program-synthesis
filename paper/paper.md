@@ -241,6 +241,44 @@ Post-hoc projection is the simplest algorithm that admits a clean
 soundness proof. Predicate-pushdown variants can be verified
 against this rewriter as a reference; we leave that to future work.
 
+## Static reference, dynamic gateway
+
+A confusion the artifact shape invites is whether Postern requires
+the lake to be batched or otherwise frozen. It does not. Every
+input to the rewriter is bound at *request* time: the plan
+$q$ submitted by the agent over MCP, the principal $p$ extracted
+from the verified biscuit token on that request, and the catalog
+snapshot $\mathit{cat}$ that the gateway consults at evaluation.
+The rewriter is a pure function of $(\mathit{cat}, P, p, q)$ and
+never reads a row — only relation and column *names*. Underlying
+Parquet data may therefore be mutable, growing, partitioned, or
+remote; the lake can be queried online by long-running agent
+sessions, and a deployment may issue arbitrarily many distinct
+plans per principal without any pre-registration step. The
+column-grant policy $P$ is the only artifact that must be loaded
+into the gateway ahead of time; live policy reload is supported
+operationally, and Theorem 6 (monotonicity) bounds the safety
+direction of an in-flight change — strengthening the policy may
+widen the released set but cannot grant a column the previous
+policy did not.
+
+The Lean-side `lake exe postern-corpus` is a *build-time*
+conformance tool: it emits a JSON corpus of $(\mathit{input},
+\mathit{expected\ output})$ pairs from the Lean reference
+rewriter, which `postern-diff` then asserts the Rust
+implementation honours byte-for-byte (§5). The corpus is not in
+the request path — the production gateway runs the
+structurally-identical Rust mirror of the Lean function. The
+runtime constraints that *do* apply are about plan *shape* and
+*catalog truthfulness*, not data motion: the Plan IR is
+single-relation (Scan/Project/Filter), so cross-relation joins,
+aggregations, window functions, and recursive CTEs are
+deliberately out of scope (§6 itemises each); the gateway is
+trusted to consult a catalog snapshot that faithfully describes
+the physical Parquet schema at evaluation time, and catalog drift
+between the snapshot and the store is itself an open problem
+listed in §6.
+
 ## Capability-bounded data flow
 
 The rewriter of §3 (Layer 1) constrains what data reaches the
