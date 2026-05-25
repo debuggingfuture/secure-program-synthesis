@@ -1,0 +1,479 @@
+---
+import Base from "../layouts/Base.astro";
+---
+
+<Base
+  title="Postern — 7-slide overview"
+  description="Seven slides summarising the Postern research artifact: problem, architecture, Lean proofs, Rust mirror, capability-bounded data flow, open problems."
+  bare={true}
+>
+  <link
+    rel="stylesheet"
+    href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css"
+  />
+  <link
+    rel="stylesheet"
+    href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/theme/white.css"
+    id="reveal-theme"
+  />
+
+  <div class="reveal">
+    <div class="slides">
+
+      <!-- S1: Title / thesis -->
+      <section class="slide-title">
+        <p class="eyebrow">Research artifact &middot; 2026</p>
+        <h1>Postern</h1>
+        <h2>Lean-verified Biscuit-Datalog policies for agentic data lakehouses</h2>
+        <p class="claim">
+          <strong>First Lean-mechanised soundness theorem</strong> for a
+          plan-level access-control rewriter in an LLM-agent-facing data
+          lakehouse.
+        </p>
+        <p class="claim small">
+          Two layers behind one gateway: a <em>rewriter</em> (inspired by
+          Cedar) bounds <em>what data</em> reaches the agent, and a
+          <em>capability-bounded data flow</em> layer (inspired by Odersky
+          et&nbsp;al.) bounds <em>what the agent's code may do</em> with
+          released values. Biscuit attenuation, audience, expiry, key
+          rotation, cross-relation joins, and DP aggregation are explicit
+          open problems (&sect;6).
+        </p>
+      </section>
+
+      <!-- S2: Problem -->
+      <section>
+        <h2>Agents need a governance layer at the lake</h2>
+        <p>
+          An agent's effective rights are <em>context-driven</em>: which
+          principal it acts for, which task it was invoked under, which
+          scope the caller granted. The same agent code, called by two
+          principals — or by one principal under two tasks — must read
+          two different views.
+        </p>
+        <p class="small">
+          Traditional RBAC bakes a static
+          <em>identity&nbsp;&rarr;&nbsp;role&nbsp;&rarr;&nbsp;permission</em>
+          chain at provisioning time and cannot encode any of those axes.
+          Per-engine RLS doesn't survive the ETL boundary; tenant
+          segregation forfeits the cross-source joins that motivate the
+          lakehouse. Policy has to move to the <em>query plane</em>, gated
+          under the agent's task-scoped identity at query time.
+        </p>
+        <pre class="mermaid" is:raw>
+flowchart LR
+  classDef ok fill:#eef,stroke:#446,color:#333
+  classDef agent fill:#fec,stroke:#b15c2e,color:#333
+  classDef bad fill:#fee,stroke:#a33,color:#333,stroke-dasharray:4
+
+  subgraph rbac["RBAC (stable, fits humans)"]
+    direction LR
+    u[user]:::ok --> rl[role]:::ok --> pm[perms]:::ok
+  end
+
+  subgraph reality["Agent (context-driven, per call)"]
+    direction LR
+    pr[principal]:::agent --> ag[agent]:::agent
+    tk[task] -.-> ag
+    sc[scope] -.-> ag
+    ag --> vv{{"view varies per call"}}:::bad
+  end
+        </pre>
+      </section>
+
+      <!-- S3: Architecture (adapted from paper §Design + §4) -->
+      <section>
+        <h2>Architecture</h2>
+        <p class="muted small">
+          Adapted from paper &sect;Design (Layer&nbsp;1 rewriter) and
+          &sect;4 (Layer&nbsp;2 capability-bounded data flow).
+        </p>
+        <pre class="mermaid" is:raw>
+flowchart LR
+  agent[LLM agent] -->|MCP plan + biscuit| gw{{Postern gateway}}
+  subgraph TCB[trusted base]
+    gw -->|verify| bc[biscuit verifier]
+    bc -->|principal| rw["plan rewriter<br/>(Lean ref &harr; Rust mirror)"]
+    pol[(policy)] --> rw
+    cat[(catalog)] --> rw
+    rw -->|Option Plan| exe[DuckDB / Polars]
+    exe --> guard["capability-bounded sink<br/>Cap·Tagged · opaque receipt"]
+  end
+  guard -->|receipt| agent
+        </pre>
+        <p class="small">
+          <strong>Layer&nbsp;1</strong> (rewriter) constrains <em>what
+          data</em> reaches the agent; <strong>Layer&nbsp;2</strong>
+          (capability-bounded sink) constrains <em>what the agent's
+          code may do</em> with released values. Rust mirror is
+          hand-written and pinned to the Lean reference by the
+          <code>postern-diff</code> conformance harness (18/18 cases);
+          property-based differential testing is an open problem
+          (&sect;6).
+        </p>
+      </section>
+
+      <!-- S4: What Lean proves -->
+      <section>
+        <h2>What Lean proves</h2>
+        <table class="theorems">
+          <thead>
+            <tr>
+              <th>theorem</th>
+              <th>file</th>
+              <th>status</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>rewrite_sound</code></td>
+              <td><code>Postern.lean</code></td>
+              <td><span class="badge ok">proved</span></td>
+            </tr>
+            <tr>
+              <td><code>rewrite_filter_sound</code></td>
+              <td><code>Postern.lean</code></td>
+              <td><span class="badge ok">proved</span></td>
+            </tr>
+            <tr>
+              <td><code>eval_monotone</code></td>
+              <td><code>Datalog.lean</code></td>
+              <td><span class="badge partial">proof reduces to one sorry</span></td>
+            </tr>
+            <tr>
+              <td><code>eval_sound</code></td>
+              <td><code>Datalog.lean</code></td>
+              <td><span class="badge todo">stated, sorry</span></td>
+            </tr>
+            <tr>
+              <td><code>eval_terminates</code></td>
+              <td><code>Datalog.lean</code></td>
+              <td><span class="badge todo">stated, sorry</span></td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="small">
+          Axioms of proven theorems:
+          <code>{`{ propext, Quot.sound }`}</code>.
+          <code>eval_monotone</code>'s body is written but reduces
+          to <code>herbrandBound_mono</code> — a labelled
+          <code>sorry</code> we expose rather than hide. Eight
+          supporting iterator lemmas are proven.
+        </p>
+      </section>
+
+      <!-- S5: Learning from Cedar -->
+      <section>
+        <h2>Learning from Cedar</h2>
+        <p>
+          <code>postern-core</code> mirrors the Lean rewriter one-for-one.
+          The gateway evaluates policies through
+          <code>biscuit_auth::datalog::World</code> behind a Cargo
+          feature flag.
+        </p>
+        <ul>
+          <li><code>postern-core</code> — Plan IR, policy, <code>rewrite()</code>.</li>
+          <li><code>postern-guardrail</code> — paper &sect;4's <em>capability-bounded data flow</em>: branded <code>Cap&lt;'sc, C&gt;</code>, invariant <code>'sc</code>, opaque-receipt sinks (three <code>compile_fail</code> doctests pin the lexical escape attempts).</li>
+          <li><code>postern-diff</code> — reference-conformance harness, asserts Rust output is byte-equal to the Lean reference on a hand-curated JSON corpus (18/18 cases: 15 accept, 3 refuse).</li>
+          <li><code>postern-wasm</code> — surface this site loads.</li>
+        </ul>
+        <p class="small">
+          The WASM module powering the <a href="/demo">demo</a> is today the
+          column-grant DSL evaluator; Biscuit-Datalog migration in progress.
+        </p>
+      </section>
+
+      <!-- S6: Capability-bounded data flow (paper §4) -->
+      <section>
+        <h2>Capability-bounded data flow</h2>
+        <p class="small">
+          The rewriter constrains <em>what data</em> reaches the agent.
+          A separate layer constrains <em>what the agent's code may do</em>
+          with the values released. Inspired by Odersky et al.'s Scala&nbsp;3
+          capture-checking; Rust has none, so we mechanise a weaker analog
+          out of three pure-Rust constructions.
+        </p>
+        <pre class="rust-snip"><code>{`pub fn to_llm<'sc, T, C, S>(
+    cap: Cap<'sc, C>,
+    data: Tagged<'sc, T, C>,
+    serialize: S,
+) -> LlmAck
+where S: FnOnce(T) -> String;   // T never escapes the sink`}</code></pre>
+        <table class="theorems">
+          <thead>
+            <tr>
+              <th>bypass attempt</th>
+              <th>mechanism</th>
+              <th>pinned by</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>forge a <code>Cap</code></td>
+              <td>sealed private constructor</td>
+              <td><span class="badge ok">compile_fail</span></td>
+            </tr>
+            <tr>
+              <td>read <code>Tagged::value</code></td>
+              <td>private <code>value</code> field, sinks only</td>
+              <td><span class="badge ok">compile_fail</span></td>
+            </tr>
+            <tr>
+              <td>escape brand <code>'sc</code></td>
+              <td>invariant <code>PhantomData</code> + <code>for&lt;'sc&gt;</code> scope combinator</td>
+              <td><span class="badge ok">compile_fail</span></td>
+            </tr>
+            <tr>
+              <td>side-channel via <code>T</code></td>
+              <td>opaque receipts (only serialised length escapes)</td>
+              <td><span class="badge ok">type signature</span></td>
+            </tr>
+          </tbody>
+        </table>
+        <p class="small muted">
+          Construction is the one used by <code>ghost-cell</code> for branded
+          references. Crate is <code>no_std</code>-compatible (paper &sect;4).
+        </p>
+      </section>
+
+      <!-- S7: Open problems -->
+      <section>
+        <h2>Open problems</h2>
+        <ul>
+          <li>Block <strong>attenuation</strong> — biscuit blocks can shrink rights mid-flight; the rewriter doesn't yet model this.</li>
+          <li><strong>Audience checks</strong> + <strong>expiry</strong> — bind tokens to gateway identity and a time window.</li>
+          <li><strong>Key rotation</strong> for the verifier without invalidating in-flight tokens.</li>
+          <li><strong>Cross-relation joins</strong> — the current IR is single-relation; multi-relation grants compose non-trivially.</li>
+          <li><strong>Aggregation with a DP boundary</strong> — summary outputs without leaking row-level columns.</li>
+        </ul>
+        <p class="muted small">Paper &sect;6 enumerates the full open-problem list.</p>
+        <p class="ribbon">
+          <a href="/paper">Read the paper</a> &middot;
+          <a href="/paper.pdf">PDF</a> &middot;
+          <a href="/demo">Try the WASM demo</a> &middot;
+          <a href="https://github.com/debuggingfuture/secure-program-synthesis">GitHub</a>
+        </p>
+      </section>
+
+    </div>
+  </div>
+
+  <script>
+    import Reveal from "reveal.js";
+    import mermaid from "mermaid";
+
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: "neutral",
+      securityLevel: "strict",
+      flowchart: { curve: "linear", htmlLabels: true },
+      fontFamily: "ui-monospace, JetBrains Mono, Menlo, monospace",
+    });
+
+    // Render mermaid blocks on each slide as it becomes active.
+    async function renderMermaidInSlide(slide: Element | null) {
+      if (!slide) return;
+      const pres = slide.querySelectorAll("pre.mermaid:not([data-rendered])");
+      for (const pre of Array.from(pres)) {
+        const el = pre as HTMLElement;
+        el.setAttribute("data-rendered", "1");
+        const src = el.textContent ?? "";
+        const id = "mmd-" + Math.random().toString(36).slice(2);
+        try {
+          const { svg } = await mermaid.render(id, src);
+          el.innerHTML = svg;
+        } catch (e) {
+          el.innerHTML = `<pre style="color:#b03a3a">mermaid error: ${String(e)}</pre>`;
+        }
+      }
+    }
+
+    const deck = new Reveal({
+      hash: true,
+      slideNumber: "c/t",
+      controlsTutorial: false,
+      transition: "fade",
+      width: 1120,
+      height: 720,
+      margin: 0.04,
+    });
+    deck.initialize().then(() => {
+      renderMermaidInSlide(deck.getCurrentSlide());
+      // reveal.js's `on()` lacks types for its custom events in
+      // @types/reveal.js, so we cast through the wider Element form.
+      (deck as unknown as {
+        on: (
+          ev: string,
+          h: (e: { currentSlide: Element }) => void,
+        ) => void;
+      }).on("slidechanged", (e) => renderMermaidInSlide(e.currentSlide));
+    });
+  </script>
+
+  <style is:global>
+    /* Override reveal.js defaults to match site voice. */
+    .reveal {
+      font-family: var(--font-sans, system-ui, sans-serif);
+      color: #222;
+    }
+
+    .reveal h1,
+    .reveal h2,
+    .reveal h3 {
+      font-family: ui-serif, "Iowan Old Style", Palatino, serif;
+      text-transform: none;
+      letter-spacing: -0.01em;
+      color: #1a1a1a;
+    }
+
+    .reveal h1 {
+      font-size: 3rem;
+      margin-bottom: 0.4rem;
+    }
+
+    .reveal h2 {
+      font-size: 1.7rem;
+      margin-bottom: 1rem;
+      border-bottom: 1px solid #d9d6cf;
+      padding-bottom: 0.3rem;
+    }
+
+    .reveal code {
+      font-family: ui-monospace, "JetBrains Mono", Menlo, monospace;
+      font-size: 0.88em;
+      background: #f2efe7;
+      padding: 0.05rem 0.3rem;
+      border-radius: 2px;
+    }
+
+    .reveal pre.rust-snip {
+      background: #f7f4ec;
+      border: 1px solid #d9d6cf;
+      padding: 0.6rem 0.9rem;
+      font-family: ui-monospace, "JetBrains Mono", Menlo, monospace;
+      font-size: 0.78rem;
+      line-height: 1.35;
+      max-width: 95%;
+      margin: 0.6rem auto;
+      text-align: left;
+      white-space: pre;
+      overflow-x: auto;
+    }
+
+    .reveal pre.rust-snip code {
+      background: transparent;
+      padding: 0;
+    }
+
+    .reveal pre.mermaid {
+      background: #fff;
+      border: 1px solid #d9d6cf;
+      padding: 1rem;
+      font-size: 0.7rem;
+      max-width: 95%;
+      margin: 0.6rem auto;
+      text-align: center;
+    }
+
+    .reveal pre.mermaid svg {
+      max-width: 100% !important;
+      height: auto !important;
+    }
+
+    .reveal .slide-title {
+      text-align: left;
+    }
+
+    .reveal .eyebrow {
+      font-family: ui-monospace, "JetBrains Mono", Menlo, monospace;
+      text-transform: uppercase;
+      font-size: 0.74rem;
+      letter-spacing: 0.1em;
+      color: #b15c2e;
+    }
+
+    .reveal .slide-title h2 {
+      border: none;
+      font-style: italic;
+      font-weight: 400;
+      color: #555;
+      font-size: 1.4rem;
+      margin-top: 0.5rem;
+    }
+
+    .reveal .claim {
+      max-width: 28em;
+      font-size: 1.05rem;
+      margin: 1.6rem 0 0;
+      color: #333;
+    }
+
+    .reveal .muted {
+      color: #888;
+    }
+
+    .reveal .small {
+      font-size: 0.86rem;
+      color: #555;
+    }
+
+    .reveal .bad {
+      color: #b03a3a;
+    }
+
+    .reveal .good {
+      color: #2f6b3a;
+    }
+
+    .reveal ul {
+      font-size: 0.96rem;
+    }
+
+    .reveal .theorems {
+      width: 100%;
+      font-size: 0.86rem;
+      border-collapse: collapse;
+      margin: 0.6rem 0;
+    }
+
+    .reveal .theorems th,
+    .reveal .theorems td {
+      border-bottom: 1px solid #e3e0d8;
+      padding: 0.4rem 0.6rem;
+      text-align: left;
+    }
+
+    .reveal .badge {
+      font-family: ui-monospace, monospace;
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      padding: 0.1rem 0.4rem;
+      border-radius: 2px;
+    }
+
+    .reveal .badge.ok {
+      background: rgba(47, 107, 58, 0.12);
+      color: #2f6b3a;
+    }
+
+    .reveal .badge.todo {
+      background: #fff7e6;
+      color: #b88330;
+    }
+
+    .reveal .badge.partial {
+      background: rgba(177, 92, 46, 0.14);
+      color: #b15c2e;
+    }
+
+    .reveal .ribbon {
+      margin-top: 1.4rem;
+      font-size: 0.94rem;
+    }
+
+    .reveal a {
+      color: #b15c2e;
+    }
+  </style>
+</Base>

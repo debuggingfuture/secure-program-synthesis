@@ -4,6 +4,7 @@ members = [
     "crates/postern-core",
     "crates/postern-diff",
     "crates/postern-guardrail",
+    "crates/postern-wasm",
 ]
 
 [workspace.package]

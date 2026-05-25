@@ -1,0 +1,674 @@
+---
+import Base from "../layouts/Base.astro";
+import {
+  CATALOG,
+  POLICY,
+  TABLES,
+  SENSITIVE,
+  PRINCIPALS,
+  policyAsDatalog,
+} from "../lib/scenario-data.ts";
+// Inline the policy file at build time via Vite's `?raw` import.
+// Path is web-rooted; Vite walks up to find the file.
+import policyText from "../../../scenarios/financial-institution/policy.postern?raw";
+const datalogText = policyAsDatalog(POLICY);
+
+const relations = Object.keys(CATALOG);
+
+// Serialise data the client form needs.
+const demoConfig = {
+  catalog: CATALOG,
+  policy: POLICY,
+  principals: PRINCIPALS,
+  sensitive: SENSITIVE,
+};
+---
+
+<Base
+  title="Postern — interactive demo"
+  description="Pick a principal, a relation, and columns to project. The WASM-compiled Postern rewriter shows the rewritten plan or refusal reason."
+>
+  <main class="demo">
+    <header class="demo__head">
+      <p class="eyebrow">Interactive demo</p>
+      <h1>Financial-institution scenario</h1>
+      <p class="lede">
+        Three principals (CRM, CardOps, FraudRisk), three tables, one policy.
+        Submit a plan and the WASM-compiled rewriter answers: <em>rewrite</em>
+        with a projected column list, or <em>refuse</em> with a reason.
+      </p>
+    </header>
+
+    <section class="block">
+      <h2>1. Raw data</h2>
+      <p class="muted">
+        Synthetic samples — same schema as the Kaggle
+        <code>transactions-fraud-datasets</code>. Sensitive columns are flagged
+        <span class="sensitive">like this</span>; the policy must never release
+        them.
+      </p>
+
+      <div class="tables">
+        {
+          relations.map((rel) => (
+            <article class="table-card">
+              <header>
+                <h3>
+                  <code>{rel}</code>
+                </h3>
+                <span class="muted small">
+                  {TABLES[rel].length} rows &middot; {CATALOG[rel].length} columns
+                </span>
+              </header>
+              <table>
+                <thead>
+                  <tr>
+                    {CATALOG[rel].map((col) => (
+                      <th
+                        class={(SENSITIVE[rel] ?? []).includes(col) ? "sensitive" : undefined}
+                      >
+                        {col}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {TABLES[rel].map((row) => (
+                    <tr>
+                      {CATALOG[rel].map((col) => (
+                        <td
+                          class={(SENSITIVE[rel] ?? []).includes(col) ? "sensitive" : undefined}
+                        >
+                          {String(row[col])}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </article>
+          ))
+        }
+      </div>
+    </section>
+
+    <section class="block">
+      <h2>2. Policy</h2>
+      <p class="muted">
+        Surface syntax (left) is sugar over a list of <code>right(p, r, c)</code>
+        facts (right) — one fact per principal/relation/column triple.
+      </p>
+      <div class="policy-grid">
+        <div>
+          <h3 class="policy-title">policy.postern</h3>
+          <pre class="policy-postern">{policyText}</pre>
+        </div>
+        <div>
+          <h3 class="policy-title">Datalog desugaring</h3>
+          <pre class="policy-datalog">{datalogText}</pre>
+        </div>
+      </div>
+    </section>
+
+    <section class="block">
+      <h2>3. Try it</h2>
+
+      <form id="rewrite-form" class="form" autocomplete="off">
+        <fieldset>
+          <legend>Principal</legend>
+          <div class="radio-row" id="principal-group">
+            {
+              PRINCIPALS.map((p, i) => (
+                <label>
+                  <input
+                    type="radio"
+                    name="principal"
+                    value={p}
+                    checked={i === 0}
+                  />
+                  <span>{p}</span>
+                </label>
+              ))
+            }
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Relation</legend>
+          <select id="relation-select" name="relation">
+            {relations.map((r) => <option value={r}>{r}</option>)}
+          </select>
+        </fieldset>
+
+        <fieldset>
+          <legend>Columns to project (Plan: Scan → Project)</legend>
+          <div class="columns" id="columns-list" />
+          <p class="muted small">Leave empty = project nothing (output schema will be policy-allowed columns only).</p>
+        </fieldset>
+
+        <fieldset>
+          <legend>Optional filter column (Plan: ... → Filter)</legend>
+          <select id="filter-select" name="filter">
+            <option value="">— none —</option>
+          </select>
+          <p class="muted small">
+            The rewriter refuses if the filter column isn't in the principal's grant set.
+          </p>
+        </fieldset>
+
+        <div class="actions">
+          <button type="submit" class="cta cta--primary">Rewrite plan</button>
+          <button type="reset" class="cta">Reset</button>
+        </div>
+      </form>
+
+      <output id="result" class="result" aria-live="polite">
+        <p class="muted">Pick options and submit to see the rewrite.</p>
+      </output>
+
+      <details class="about">
+        <summary>About this demo</summary>
+        <ul>
+          <li>
+            The WASM binary is the <strong>column-grant rewriter</strong>
+            (<code>postern-core::rewrite</code>) compiled to
+            <code>wasm32-unknown-unknown</code> via <code>wasm-pack</code>.
+            It mirrors the Lean reference one-for-one.
+          </li>
+          <li>
+            The <strong>Biscuit-Datalog migration is in progress</strong>:
+            the production gateway will dispatch through
+            <code>biscuit_auth::datalog::World</code>, but that pathway is
+            task #4 and is not what this WASM executes today.
+          </li>
+          <li>
+            Refusal reasons surfaced: <em>unknown relation</em>
+            (catalog lookup empty) and <em>filter on forbidden
+            column</em> (predicate touches columns outside the principal's
+            grants).
+          </li>
+          <li>
+            Plan IR uses three operators only — <code>Scan</code>,
+            <code>Project</code>, <code>Filter</code> — matching the
+            inductive defined in <code>verifier/lean/Postern.lean</code>.
+          </li>
+        </ul>
+      </details>
+    </section>
+  </main>
+
+  <script
+    is:inline
+    type="application/json"
+    id="demo-config"
+    set:html={JSON.stringify(demoConfig)}
+  />
+
+  <script>
+    import init, { rewrite_plan } from "../wasm/postern_wasm.js";
+    import wasmUrl from "../wasm/postern_wasm_bg.wasm?url";
+
+    interface DemoConfig {
+      catalog: Record<string, string[]>;
+      policy: Array<{ principal: string; relation: string; columns: string[] }>;
+      principals: ReadonlyArray<string>;
+      sensitive: Record<string, ReadonlyArray<string>>;
+    }
+
+    const configEl = document.getElementById("demo-config") as HTMLScriptElement | null;
+    if (!configEl) throw new Error("demo-config script tag missing");
+    const cfg: DemoConfig = JSON.parse(configEl.textContent ?? "{}");
+
+    const relationSelect = document.getElementById("relation-select") as HTMLSelectElement;
+    const filterSelect = document.getElementById("filter-select") as HTMLSelectElement;
+    const columnsList = document.getElementById("columns-list") as HTMLDivElement;
+    const form = document.getElementById("rewrite-form") as HTMLFormElement;
+    const result = document.getElementById("result") as HTMLElement;
+
+    function escape(s: string): string {
+      return s
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+    }
+
+    function refreshColumnList(): void {
+      const rel = relationSelect.value;
+      const cols = cfg.catalog[rel] ?? [];
+      const sensitive = cfg.sensitive[rel] ?? [];
+
+      columnsList.innerHTML = cols
+        .map((c) => {
+          const tag = sensitive.includes(c) ? ' class="sensitive"' : "";
+          return `<label class="col-pick"><input type="checkbox" name="col" value="${escape(c)}" /> <code${tag}>${escape(c)}</code></label>`;
+        })
+        .join("");
+
+      filterSelect.innerHTML =
+        `<option value="">— none —</option>` +
+        cols
+          .map(
+            (c) =>
+              `<option value="${escape(c)}">${escape(c)}</option>`,
+          )
+          .join("");
+    }
+
+    relationSelect.addEventListener("change", refreshColumnList);
+    refreshColumnList();
+
+    // Build the input plan IR from form selections.
+    function buildPlan(formData: FormData) {
+      const rel = String(formData.get("relation"));
+      const cols = formData.getAll("col").map(String);
+      const filter = String(formData.get("filter") ?? "");
+
+      let plan: unknown = { op: "scan", rel };
+      if (filter) plan = { op: "filter", sub: plan, col: filter };
+      if (cols.length > 0) plan = { op: "project", sub: plan, cols };
+      return plan;
+    }
+
+    let wasmReady: Promise<void> | null = null;
+    function ensureWasm(): Promise<void> {
+      if (!wasmReady) {
+        wasmReady = init({ module_or_path: wasmUrl as unknown as string }).then(() => {});
+      }
+      return wasmReady;
+    }
+
+    function renderResult(
+      input: unknown,
+      response: { ok: true; allowed: string[]; output_plan: unknown } | { ok: false; reason: string; allowed: string[] },
+      principal: string,
+    ): string {
+      const allowed = response.allowed.length
+        ? response.allowed.map((c) => `<code>${escape(c)}</code>`).join(" ")
+        : '<em class="muted">(none — principal has no grants on this relation)</em>';
+
+      const inputPretty = `<pre class="plan">${escape(JSON.stringify(input, null, 2))}</pre>`;
+
+      if (response.ok) {
+        const outputPretty = `<pre class="plan plan--ok">${escape(JSON.stringify(response.output_plan, null, 2))}</pre>`;
+        return `
+          <div class="result__head verdict verdict--ok">
+            <span class="badge ok">accepted</span>
+            <span>The rewriter wrapped the plan in <code>Project</code> with the policy-allowed projection.</span>
+          </div>
+          <div class="result__cols">
+            <strong>Policy-allowed columns</strong> for <code>${escape(principal)}</code>: ${allowed}
+          </div>
+          <div class="result__plans">
+            <div>
+              <h4>Input plan</h4>
+              ${inputPretty}
+            </div>
+            <div>
+              <h4>Output plan</h4>
+              ${outputPretty}
+            </div>
+          </div>
+        `;
+      }
+      return `
+        <div class="result__head verdict verdict--bad">
+          <span class="badge bad">refused</span>
+          <span>${escape(response.reason)}</span>
+        </div>
+        <div class="result__cols">
+          <strong>Policy-allowed columns</strong> for <code>${escape(principal)}</code>: ${allowed}
+        </div>
+        <div class="result__plans">
+          <div>
+            <h4>Input plan</h4>
+            ${inputPretty}
+          </div>
+          <div>
+            <h4>Output plan</h4>
+            <pre class="plan plan--bad">none (refused)</pre>
+          </div>
+        </div>
+      `;
+    }
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      result.innerHTML = `<p class="muted">Loading WASM…</p>`;
+      try {
+        await ensureWasm();
+      } catch (err) {
+        result.innerHTML = `<p class="muted">WASM failed to load: ${escape(String(err))}</p>`;
+        return;
+      }
+      const fd = new FormData(form);
+      const principal = String(fd.get("principal"));
+      const plan = buildPlan(fd);
+      const request = {
+        catalog: cfg.catalog,
+        policy: cfg.policy,
+        principal,
+        plan,
+      };
+      try {
+        const response = rewrite_plan(request);
+        result.innerHTML = renderResult(plan, response, principal);
+      } catch (err) {
+        result.innerHTML = `<p class="muted">rewrite_plan errored: ${escape(String(err))}</p>`;
+      }
+    });
+
+    form.addEventListener("reset", () => {
+      // Defer until after defaults are re-applied.
+      setTimeout(() => {
+        refreshColumnList();
+        result.innerHTML = `<p class="muted">Pick options and submit to see the rewrite.</p>`;
+      }, 0);
+    });
+  </script>
+</Base>
+
+<style>
+  .demo {
+    max-width: 1080px;
+    margin: 0 auto;
+    padding: 2.4rem 1.2rem 4rem;
+  }
+
+  .demo__head {
+    margin-bottom: 2rem;
+  }
+
+  .eyebrow {
+    font-family: var(--font-mono);
+    text-transform: uppercase;
+    font-size: 0.78rem;
+    letter-spacing: 0.08em;
+    color: var(--accent);
+    margin: 0 0 0.5rem;
+  }
+
+  .demo h1 {
+    font-family: var(--font-body);
+    font-size: clamp(1.4rem, 3vw, 2rem);
+    margin: 0 0 0.4rem;
+    letter-spacing: -0.01em;
+  }
+
+  .lede {
+    color: var(--fg-muted);
+    max-width: 60ch;
+    margin: 0;
+  }
+
+  .block {
+    margin-top: 2.5rem;
+    padding-top: 1.4rem;
+    border-top: 1px solid var(--border);
+  }
+
+  .block h2 {
+    font-family: var(--font-mono);
+    font-size: 1rem;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin: 0 0 0.5rem;
+  }
+
+  .muted {
+    color: var(--fg-muted);
+  }
+
+  .small {
+    font-size: 0.86rem;
+  }
+
+  .tables {
+    display: grid;
+    gap: 1.2rem;
+    margin-top: 1rem;
+  }
+
+  .table-card {
+    border: 1px solid var(--border);
+    background: var(--bg-elevated);
+    padding: 0.8rem 1rem 1rem;
+    border-radius: 4px;
+    overflow-x: auto;
+  }
+
+  .table-card header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 0.6rem;
+  }
+
+  .table-card h3 {
+    margin: 0;
+    font-size: 0.96rem;
+  }
+
+  .policy-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 1rem;
+    margin-top: 0.8rem;
+  }
+
+  @media (min-width: 760px) {
+    .policy-grid {
+      grid-template-columns: 1fr 1fr;
+    }
+  }
+
+  .policy-title {
+    margin: 0 0 0.4rem;
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    color: var(--fg-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+
+  .policy-postern,
+  .policy-datalog {
+    font-size: 0.86rem;
+    white-space: pre;
+    margin: 0;
+  }
+
+  .form {
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1.2rem;
+    margin-top: 1rem;
+  }
+
+  .form fieldset {
+    border: none;
+    padding: 0;
+    margin: 0 0 1rem;
+  }
+
+  .form legend {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--fg-muted);
+    margin-bottom: 0.4rem;
+  }
+
+  .radio-row {
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+  }
+
+  .radio-row label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+  }
+
+  .form select {
+    font-family: var(--font-mono);
+    font-size: 0.9rem;
+    padding: 0.35rem 0.55rem;
+    border: 1px solid var(--border-strong);
+    border-radius: 3px;
+    background: var(--bg);
+    color: var(--fg);
+  }
+
+  .columns {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem 1rem;
+  }
+
+  .col-pick {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+    font-family: var(--font-mono);
+    font-size: 0.9rem;
+  }
+
+  .actions {
+    display: flex;
+    gap: 0.6rem;
+    margin-top: 0.8rem;
+  }
+
+  .cta {
+    display: inline-block;
+    padding: 0.5rem 1rem;
+    font-family: var(--font-sans);
+    font-size: 0.94rem;
+    border: 1px solid var(--border-strong);
+    background: var(--bg-elevated);
+    color: var(--fg);
+    border-radius: 3px;
+    cursor: pointer;
+  }
+
+  .cta--primary {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+  }
+
+  .cta:hover {
+    border-color: var(--accent);
+  }
+
+  .cta--primary:hover {
+    opacity: 0.92;
+  }
+
+  .result {
+    display: block;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1.2rem;
+    margin-top: 1rem;
+  }
+
+  .result__head {
+    display: flex;
+    align-items: center;
+    gap: 0.7rem;
+    margin-bottom: 0.6rem;
+  }
+
+  .verdict--ok {
+    color: var(--accept);
+  }
+
+  .verdict--bad {
+    color: var(--refuse);
+  }
+
+  .badge {
+    font-family: var(--font-mono);
+    font-size: 0.74rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 0.1rem 0.5rem;
+    border-radius: 2px;
+  }
+
+  .badge.ok {
+    background: rgba(47, 107, 58, 0.16);
+    color: var(--accept);
+  }
+
+  .badge.bad {
+    background: rgba(176, 58, 58, 0.16);
+    color: var(--refuse);
+  }
+
+  .result__cols {
+    margin: 0.5rem 0 1rem;
+    font-size: 0.94rem;
+  }
+
+  .result__plans {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0.8rem;
+  }
+
+  @media (min-width: 720px) {
+    .result__plans {
+      grid-template-columns: 1fr 1fr;
+    }
+  }
+
+  .result__plans h4 {
+    font-family: var(--font-mono);
+    font-size: 0.76rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--fg-muted);
+    margin: 0 0 0.3rem;
+  }
+
+  .plan {
+    font-size: 0.84rem;
+    margin: 0;
+  }
+
+  .plan--ok {
+    border-left: 3px solid var(--accept);
+  }
+
+  .plan--bad {
+    border-left: 3px solid var(--refuse);
+    color: var(--refuse);
+  }
+
+  .about {
+    margin-top: 1.6rem;
+    border: 1px dashed var(--border-strong);
+    border-radius: 4px;
+    padding: 0.7rem 1rem;
+    font-size: 0.92rem;
+  }
+
+  .about summary {
+    cursor: pointer;
+    font-family: var(--font-mono);
+    color: var(--fg-muted);
+    letter-spacing: 0.04em;
+  }
+
+  .about ul {
+    margin: 0.6rem 0 0;
+  }
+</style>

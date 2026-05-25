@@ -1,0 +1,213 @@
+---
+import Base from "../layouts/Base.astro";
+import { renderPaper } from "../lib/paper-render.ts";
+
+const { frontmatter, html, references } = await renderPaper();
+const authorLine = frontmatter.author?.join(", ") ?? "";
+---
+
+<Base title={frontmatter.title} description={frontmatter.subtitle}>
+  <link
+    rel="stylesheet"
+    href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css"
+  />
+
+  <main class="paper">
+    <header class="paper__head">
+      <h1>{frontmatter.title}</h1>
+      {frontmatter.subtitle && <p class="paper__subtitle">{frontmatter.subtitle}</p>}
+      {authorLine && <p class="paper__author">{authorLine}</p>}
+      <p class="paper__meta">
+        <a href="/paper.pdf">Download PDF</a>
+        {" · "}
+        <a href="https://github.com/debuggingfuture/secure-program-synthesis/blob/research/initial-scaffold/paper/paper.md">
+          paper.md
+        </a>
+        {" · "}
+        <a href="https://github.com/debuggingfuture/secure-program-synthesis/blob/research/initial-scaffold/paper/references.bib">
+          references.bib
+        </a>
+      </p>
+      {
+        frontmatter.abstract && (
+          <section class="paper__abstract">
+            <h2>Abstract</h2>
+            <p>{frontmatter.abstract}</p>
+            {frontmatter.keywords && (
+              <p class="paper__keywords">
+                <strong>Keywords.</strong> {frontmatter.keywords.join(", ")}
+              </p>
+            )}
+          </section>
+        )
+      }
+
+      <aside class="disclosure">
+        <strong>Note.</strong> The plan-rewriter theorems
+        (<code>rewrite_sound</code>, <code>rewrite_filter_sound</code>,
+        and seven supporting lemmas) are <code>sorry</code>-free in
+        <code>verifier/lean/Postern.lean</code> (axioms bounded by
+        <code>{`{propext, Quot.sound}`}</code>). The Datalog evaluator in
+        <code>verifier/lean/Datalog.lean</code> is a work in progress:
+        <code>eval_monotone</code> has a written proof that reduces to
+        <code>herbrandBound_mono</code> (currently a labelled
+        <code>sorry</code>); <code>eval_sound</code> and
+        <code>eval_terminates</code> are stated with <code>sorry</code>.
+        Eight support lemmas around the iterator are proven.
+      </aside>
+    </header>
+
+    <article class="paper__body" set:html={html} />
+
+    {
+      references.length > 0 && (
+        <section class="paper__refs">
+          <h2 id="references">References</h2>
+          <ol>
+            {references.map((r) => (
+              <li id={`ref-${r.key}`}>{r.text}</li>
+            ))}
+          </ol>
+        </section>
+      )
+    }
+  </main>
+
+  <script>
+    import mermaid from "mermaid";
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: "neutral",
+      securityLevel: "strict",
+      flowchart: { curve: "linear", htmlLabels: true },
+      fontFamily: "ui-monospace, JetBrains Mono, Menlo, monospace",
+    });
+  </script>
+</Base>
+
+<style>
+  .paper {
+    max-width: 72ch;
+    margin: 0 auto;
+    padding: 2.5rem 1.2rem 4rem;
+    font-family: var(--font-body);
+    font-size: 1.04rem;
+    line-height: 1.62;
+  }
+
+  .paper__head h1 {
+    font-size: clamp(1.4rem, 3vw, 2.1rem);
+    line-height: 1.18;
+    margin: 0 0 0.6rem;
+    letter-spacing: -0.01em;
+  }
+
+  .paper__subtitle {
+    font-size: 1.1rem;
+    color: var(--fg-muted);
+    font-style: italic;
+    margin: 0 0 0.7rem;
+  }
+
+  .paper__author {
+    color: var(--fg-muted);
+    margin: 0 0 0.3rem;
+  }
+
+  .paper__meta {
+    font-family: var(--font-sans);
+    font-size: 0.86rem;
+    color: var(--fg-faint);
+    margin: 0 0 2rem;
+  }
+
+  .paper__abstract {
+    background: var(--code-bg);
+    border-left: 3px solid var(--accent);
+    padding: 1rem 1.2rem;
+    margin: 1.5rem 0;
+    font-size: 0.96rem;
+  }
+
+  .paper__abstract h2 {
+    margin: 0 0 0.5rem;
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--fg-muted);
+    font-family: var(--font-sans);
+  }
+
+  .paper__keywords {
+    margin: 0.8rem 0 0;
+    font-size: 0.88rem;
+    color: var(--fg-muted);
+  }
+
+  .paper__body :global(h1) {
+    font-size: 1.5rem;
+    margin-top: 2.2rem;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 0.3rem;
+  }
+
+  .paper__body :global(h2) {
+    font-size: 1.22rem;
+    margin-top: 1.8rem;
+  }
+
+  .paper__body :global(h3) {
+    font-size: 1.05rem;
+    margin-top: 1.3rem;
+  }
+
+  .paper__body :global(pre) {
+    font-size: 0.86rem;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+  }
+
+  .paper__body :global(.mermaid) {
+    background: var(--bg-elevated);
+    text-align: center;
+    border: 1px solid var(--border);
+    padding: 1rem;
+    overflow-x: auto;
+  }
+
+  .paper__body :global(.cite) {
+    font-family: var(--font-sans);
+    font-size: 0.66em;
+    margin-left: 1px;
+  }
+
+  .paper__body :global(.cite a) {
+    text-decoration: none;
+  }
+
+  .paper__body :global(table) {
+    font-size: 0.93em;
+  }
+
+  .paper__refs {
+    margin-top: 3rem;
+    border-top: 1px solid var(--border);
+    padding-top: 1rem;
+    font-family: var(--font-sans);
+    font-size: 0.92rem;
+  }
+
+  .paper__refs h2 {
+    font-size: 1.15rem;
+    margin-bottom: 0.8rem;
+  }
+
+  .paper__refs ol {
+    padding-left: 1.4rem;
+  }
+
+  .paper__refs li {
+    margin: 0.5rem 0;
+    color: var(--fg-muted);
+  }
+</style>

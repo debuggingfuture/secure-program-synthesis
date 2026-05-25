@@ -1,0 +1,79 @@
+---
+import "../styles/global.css";
+
+interface Props {
+  title: string;
+  description?: string;
+  /** Hide the global header (slides page wants its own chrome). */
+  bare?: boolean;
+}
+
+const { title, description, bare = false } = Astro.props as Props;
+const path = Astro.url.pathname.replace(/\/+$/, "") || "/";
+
+const navItems: Array<{ href: string; label: string }> = [
+  { href: "/", label: "Overview" },
+  { href: "/paper", label: "Paper" },
+  { href: "/slides", label: "Slides" },
+  { href: "/demo", label: "Demo" },
+];
+
+const isCurrent = (href: string) =>
+  href === "/" ? path === "/" : path === href || path.startsWith(href + "/");
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="generator" content={Astro.generator} />
+    {description && <meta name="description" content={description} />}
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>{title}</title>
+  </head>
+  <body>
+    {
+      !bare && (
+        <header class="site-header">
+          <div class="site-header__inner">
+            <a href="/" class="site-header__brand">postern</a>
+            <nav class="site-header__nav" aria-label="Primary">
+              {navItems.map((item) => (
+                <a
+                  href={item.href}
+                  aria-current={isCurrent(item.href) ? "page" : undefined}
+                >
+                  {item.label}
+                </a>
+              ))}
+              <a
+                href="https://github.com/debuggingfuture/secure-program-synthesis"
+                rel="noopener"
+                target="_blank"
+              >
+                GitHub
+              </a>
+            </nav>
+          </div>
+        </header>
+      )
+    }
+
+    <slot />
+
+    {
+      !bare && (
+        <footer class="site-footer">
+          Postern — Lean-verified plan rewriter + Rust capability layer.
+          {" · "}
+          <a href="https://github.com/debuggingfuture/secure-program-synthesis">
+            source
+          </a>
+          {" · "}
+          Pre-publication research artifact.
+        </footer>
+      )
+    }
+  </body>
+</html>

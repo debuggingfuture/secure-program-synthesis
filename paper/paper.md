@@ -2,45 +2,34 @@
 title: "Postern: a Lean-verified access gateway for agentic data lakehouses"
 subtitle: "Secure Program Synthesis Hackathon 2026 — Track 3 research artifact"
 author:
-  - name: FractalBox
+  - name: Vincent, FractalBox
 abstract: |
   We address access control for data lakehouses queried by LLM
-  agents. Row- and column-level security in ACID-class databases
-  does not transfer to this setting — per-source policies do not
-  compose across heterogeneous ETL paths — and the deployed
-  alternative, physical tenant segregation, recovers safety only
-  by forfeiting the cross-source joins that motivate the
-  lakehouse. When upstream ACLs collapse to a single ingest IAM
-  role at materialisation, an indirect-prompt-injected agent
-  inherits the *union* of the upstream principals' permissions
-  rather than the *intersection* under the querying identity. We
-  propose plan-level rewriting against a **Biscuit-Datalog**
-  policy [@biscuit] and present **Postern**, an artifact in
-  three parts. The first is a Plan IR and a column-grant surface
-  syntax that compiles to ground `right(principal, relation,
-  column)` facts in the Horn fragment, with a rewriter
+  agents. An agent's effective rights are context-driven — which
+  principal it acts for, which task it is invoked under, which
+  scope the caller granted — and the static
+  *identity→role→permission* chain of
+  RBAC cannot encode any of those axes. Per-engine row- and
+  column-level security does not survive the ETL boundary;
+  physical tenant segregation forfeits the cross-source joins
+  that motivate the lakehouse. We propose plan-level rewriting
+  against a **Biscuit-Datalog** policy [@biscuit] and present
+  **Postern**, an artifact in three parts: (i) a rewriter
   $\mathrm{rewrite} : \mathit{Catalog} \to \mathit{Policy} \to
   \mathit{Principal} \to \mathit{Plan} \to \mathit{Option}\
-  \mathit{Plan}$ mechanised in Lean~4 [@lean4]. Nine rewriter
-  theorems are proved without `sorry` — output-column and
-  filter-predicate soundness, idempotence, policy monotonicity,
-  schema subset, two no-new-column lemmas, and two refusal
-  lemmas — with axioms bounded by `propext` and `Quot.sound`.
-  The underlying Horn-fragment Datalog evaluator is partly
-  mechanised: `eval_monotone` holds modulo one isolated
-  obligation on `List.eraseDups.length`, while `eval_sound` and
-  `eval_terminates` carry `sorryAx` obligations named in
-  `CheckAxioms.lean`. The second component is a Rust
-  capability-tracking layer inspired by Odersky et
-  al. [@capabilities-agents-2026]: invariant brand lifetimes,
-  sealed types, and opaque-receipt sinks. The third is a
-  reference-conformance harness asserting byte-equivalence
-  between the Rust rewriter and the Lean reference on 18 cases;
-  migrating the gateway to consume `biscuit_auth::datalog::World`
-  directly is in progress. We evaluate on the Kaggle
+  \mathit{Plan}$ mechanised in Lean~4 [@lean4], inspired by
+  Cedar's Lean authorization core [@cedar2024] but stated over
+  plan-level outputs rather than per-request decisions, with nine
+  `sorry`-free theorems (axioms bounded by `propext` and
+  `Quot.sound`) plus a partly-mechanised Horn-fragment Datalog
+  evaluator; (ii) a Rust capability-tracking layer inspired by
+  Odersky et al. [@capabilities-agents-2026] — invariant brand
+  lifetimes, sealed types, opaque-receipt sinks; and (iii) a
+  reference-conformance harness binding Rust to the Lean
+  reference on 18 cases. We evaluate on the Kaggle
   `transactions-fraud-datasets` schema and identify Biscuit
-  attenuation, audience, expiry, and key rotation; cross-relation
-  joins; and differentially-private aggregation as the principal
+  attenuation, audience, expiry, key rotation, cross-relation
+  joins, and differentially-private aggregation as the principal
   open problems.
 keywords:
   - access control
@@ -72,13 +61,16 @@ duplication that scales poorly with source count and churn.
 Physical tenant segregation across object-storage prefixes
 queried by disjoint engines restores safety but forfeits the
 cross-source joins that motivate the lakehouse in the first
-place. Neither composes: when channel ACLs, field-level
-security, and customer-scoped tokens collapse to a single ingest
-IAM role at materialisation, an indirect-prompt-injected agent
-inherits the *union* of the upstream principals' permissions
-rather than the *intersection* under its querying identity. We
-propose plan-level rewriting against a column-grant policy as a
-third point in this design space. **Postern**, the artifact we
+place. Neither addresses the deeper mismatch: an agent's
+effective permissions depend on the principal it acts for, the
+task it is invoked under, and the calling context — none of
+which the static *identity&nbsp;→&nbsp;role&nbsp;→&nbsp;permission*
+chain of RBAC encodes. The same agent code called by two
+principals, or invoked by one principal under two tasks, may
+legitimately need two different views. We propose plan-level
+rewriting against a column-grant policy as a third point in
+this design space, gated under the agent's task-scoped identity
+at query time. **Postern**, the artifact we
 present, has three components: a Lean~4-mechanised plan
 rewriter, a Rust capability-tracking layer constraining the
 agent's downstream computation, and a reference-conformance
@@ -90,7 +82,12 @@ harness binding the two.
    a Biscuit-Datalog policy language (Horn-fragment with ground
    `right(p, r, c)` facts compiled from the surface column-grant
    syntax), and a rewriter, mechanised in Lean~4 [@lean4]. The
-   rewriter side comprises nine `sorry`-free theorems:
+   rewriter is inspired by Cedar's Lean-mechanised authorization
+   core [@cedar2024]; we transpose the technique from per-request
+   $\mathit{authorize}$ decisions to plan-level outputs over an
+   IR, and so prove soundness of a *transformation* rather than a
+   classification. The rewriter side comprises nine `sorry`-free
+   theorems:
    output-column soundness, filter-predicate soundness, schema
    subset, idempotence under repeated application, monotonicity
    in the policy, two no-new-column lemmas, and explicit-refusal
@@ -199,18 +196,7 @@ step.
 
 Postern compiles a single policy artifact to plan-level enforcement.
 
-```mermaid
-flowchart LR
-  agent[LLM agent] -->|MCP plan + biscuit| gw{{Postern gateway}}
-  subgraph TCB
-    gw -->|verify| bc[biscuit verifier]
-    bc -->|principal| rw[Lean-extracted rewriter]
-    pol[(policy)] --> rw
-    cat[(catalog)] --> rw
-    rw -->|Option Plan| exe[DuckDB / Polars]
-  end
-  exe --> agent
-```
+![Postern architecture: the agent submits an MCP plan with a biscuit token; the gateway verifies the token, extracts the principal, and applies the Lean-extracted rewriter against the policy and catalog before lowering the rewritten plan to DuckDB/Polars. The dashed box marks the trusted computing base of §2.](figures/architecture.pdf){#fig:arch width=85%}
 
 ## Policy
 

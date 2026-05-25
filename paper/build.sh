@@ -28,3 +28,12 @@ pandoc paper.md \
   -o paper.pdf
 
 echo "wrote $(pwd)/paper.pdf"
+
+# Mirror to the web site's public/ so the landing page can link to the
+# hosted PDF at /paper.pdf. The web build (`pnpm --filter web build`)
+# copies anything under public/ verbatim to dist/.
+WEB_PUBLIC="$(cd .. && pwd)/web/public"
+if [ -d "$WEB_PUBLIC" ]; then
+  cp paper.pdf "$WEB_PUBLIC/paper.pdf"
+  echo "mirrored to $WEB_PUBLIC/paper.pdf"
+fi
