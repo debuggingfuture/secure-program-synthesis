@@ -436,7 +436,7 @@ mod tests {
             &cat(),
             &pol(),
             "CRM",
-            &Plan::filter(Plan::scan("users_data"), "ssn"),
+            &Plan::filter_col(Plan::scan("users_data"), "ssn"),
             |_cap, _t| -> sinks::LlmAck { panic!("must not run") },
         );
         assert!(result.is_none());

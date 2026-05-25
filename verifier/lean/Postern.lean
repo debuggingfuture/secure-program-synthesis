@@ -7,14 +7,20 @@
   Surface kept deliberately narrow:
     * Plans are single-relation `Scan` / `Project` / `Filter` /
       `Aggregate` trees, plus binary equi-`Join`.
+    * `Filter` carries a *predicate term* `Pred`, an ADT with a
+      column-reference constructor, a literal constructor, and a
+      generic operator/application constructor. `Pred.freeCols`
+      computes the free column-reference set of the predicate; the
+      rewriter's coverage condition is that every member of this set
+      is policy-allowed (paper §4 Theorem 13).
     * Policy carries both column grants and aggregate-only grants
       (`AggGrant`), the latter parameterising the abstract
       differential-privacy boundary `Policy.aggAllowed`.
     * The rewriter returns `Option Plan` — `none` is an explicit
-      refusal (unknown relation, forbidden filter, forbidden
-      group-by, or aggregate without admissible coverage);
-      `some q'` is a plan whose **output schema** *and*
-      **predicate-column read-set** are both contained in the
+      refusal (unknown relation, predicate references a forbidden
+      column, forbidden group-by, or aggregate without admissible
+      coverage); `some q'` is a plan whose **output schema** *and*
+      **predicate free-column set** are both contained in the
       policy's allowed set (extended with synthesized aggregate
       output-column names admitted via the DP boundary).
 
@@ -45,11 +51,24 @@
     `rewrite_refuses_forbidden_aggregate`
                                   aggregate `(op, col)` with neither
                                   column-grant nor AggGrant ⇒ `none`
+    `rewrite_filter_coverage`     every free col of every Filter
+                                  predicate ⊆ policy-allowed
+                                  (Theorem 13 — pointwise restatement
+                                  of `rewrite_filter_sound` at the
+                                  φ level)
 
   `rewrite_idempotent`, `rewrite_monotone`, and
   `rewrite_refuses_forbidden_filter` carry a `sorryAx` on the
   `Join` arm (the non-`Join` cases are fully proved); see §6 of
   the paper / `CheckAxioms.lean` for the residual proof surface.
+
+  **What this development does NOT close.** The coverage condition
+  controls direct column references in filter predicates. It does
+  *not* control inferences an agent can draw from the *values* of
+  allowed columns whose distribution is mutually informative with a
+  forbidden column (the "probe-one-region-at-a-time" attack of paper
+  §6). That half remains the open research question explicitly
+  punted in §6.
 
   The Rust prototype mirrors `Plan`, `Policy`, and `rewrite` byte-
   for-byte; `Main` (the `postern-corpus` exe) emits a JSON corpus
@@ -63,6 +82,49 @@ namespace Postern
 abbrev Principal := String
 abbrev Relation  := String
 abbrev Column    := String
+
+/-- Literal values appearing in predicate terms. Strings cover both
+    user-supplied constants and (post-tokenization) operator names;
+    we keep the type narrow because the rewriter never inspects
+    literal values, only the free-column set. -/
+abbrev Value := String
+
+/-- Operator label inside `Pred.app` — e.g. `"="`, `"and"`, `"or"`,
+    `"not"`, `"lt"`. The rewriter is operator-agnostic; only
+    `Pred.ref` contributes to `freeCols`. -/
+abbrev Op := String
+
+/-! ## Predicate terms
+
+  A `Pred` is the abstract syntax tree of a filter predicate. The
+  rewriter only inspects its *free-column set* (the columns it
+  references); operator semantics is the executor's concern. -/
+
+inductive Pred where
+  | ref   (col : Column)
+  | lit   (val : Value)
+  | app   (op  : Op) (args : List Pred)
+  deriving Repr, Inhabited
+
+/-- Free-column set of a predicate — every `ref` reachable. Order
+    and duplicates are preserved (matching the recursive
+    `flatMap`-like fold so the Rust mirror is byte-equal). Nested
+    `List Pred` recursion is handled via `attach`, which exposes
+    the strict-subterm proof to Lean's termination checker. The
+    rewriter's coverage condition is
+    `Pred.freeCols φ ⊆ P.allowed p (touched q)`. -/
+def Pred.freeCols : Pred → List Column
+  | .ref c       => [c]
+  | .lit _       => []
+  | .app _ args  =>
+    args.attach.flatMap (fun ⟨p, _⟩ => p.freeCols)
+decreasing_by
+  -- `p ∈ args` ⇒ `sizeOf p < sizeOf args`; the `.app` wrapper adds
+  -- a constructor's worth on top, so the strict decrease lifts to
+  -- the whole term.
+  have h := List.sizeOf_lt_of_mem (by assumption)
+  simp_wf
+  omega
 
 /-! ## Catalog
 
@@ -107,7 +169,9 @@ def AggOp.outputColumn (op : AggOp) (col : Column) : Column :=
 inductive Plan where
   | scan      (rel  : Relation)
   | project   (sub  : Plan) (cols : List Column)
-  | filter    (sub  : Plan) (col  : Column)
+  /-- Row-only predicate filter. `φ : Pred` is a predicate term; the
+      rewriter's coverage condition is `φ.freeCols ⊆ allowed`. -/
+  | filter    (sub  : Plan) (φ    : Pred)
   /-- Equi-join of `left` and `right` on a shared column `on`.
       Modelled as the minimum extension that exposes the
       cross-relation surface; multi-key joins / theta-joins
@@ -118,7 +182,7 @@ inductive Plan where
       is parameterised over the abstract DP boundary
       (`Policy.aggAllowed`) — see `rewrite_sound_aggregate`. -/
   | aggregate (op : AggOp) (col : Column) (groupBy : List Column) (inner : Plan)
-  deriving Repr, DecidableEq, Inhabited
+  deriving Repr, Inhabited
 
 /-- The single relation a plan reads from. For `Join` we report
     the *left* leg's touched relation by convention; the join
@@ -147,11 +211,12 @@ def Plan.schema (cat : Catalog) : Plan → List Column
   | .aggregate op col gb _ => gb ++ [op.outputColumn col]
 
 /-- Columns read by `Filter` predicates anywhere in the plan — the
-    read-set the row-selection logic depends on, distinct from the
-    output schema. `rewrite_filter_sound` asserts every member is
-    policy-allowed. The join key is *not* a `Filter` read in this
-    sense — the join-key leak is its own coverage condition,
-    audited by `rewrite_sound_join` below.
+    union of `Pred.freeCols` over every `Filter` node, distinct from
+    the output schema. `rewrite_filter_sound` asserts every member
+    is policy-allowed; the predicate-level pointwise restatement is
+    `rewrite_filter_coverage` (Theorem 13). The join key is *not* a
+    `Filter` read in this sense — the join-key leak is its own
+    coverage condition, audited by `rewrite_sound_join` below.
 
     `Aggregate` recurses into `inner` so filters underneath an
     aggregate are still policed; aggregates themselves are not
@@ -159,7 +224,7 @@ def Plan.schema (cat : Catalog) : Plan → List Column
 def Plan.filterCols : Plan → List Column
   | .scan _            => []
   | .project p _       => p.filterCols
-  | .filter  p c       => c :: p.filterCols
+  | .filter  p φ       => φ.freeCols ++ p.filterCols
   | .join l r _        => l.filterCols ++ r.filterCols
   | .aggregate _ _ _ p => p.filterCols
 
@@ -549,9 +614,9 @@ private theorem rewrite_output_shape
     have hLeaf : rewriteLeaf cat P prin (.project p cs) = some q' := h
     obtain ⟨_, _, _, _, hq⟩ := rewriteLeaf_accept_inversion cat P prin (.project p cs) q' hLeaf
     exact Or.inl ⟨_, _, hq⟩
-  | filter p c =>
-    have hLeaf : rewriteLeaf cat P prin (.filter p c) = some q' := h
-    obtain ⟨_, _, _, _, hq⟩ := rewriteLeaf_accept_inversion cat P prin (.filter p c) q' hLeaf
+  | filter p φ =>
+    have hLeaf : rewriteLeaf cat P prin (.filter p φ) = some q' := h
+    obtain ⟨_, _, _, _, hq⟩ := rewriteLeaf_accept_inversion cat P prin (.filter p φ) q' hLeaf
     exact Or.inl ⟨_, _, hq⟩
   | aggregate op col gb inner =>
     have hLeaf : rewriteLeaf cat P prin (.aggregate op col gb inner) = some q' := h
@@ -655,7 +720,7 @@ theorem rewrite_touched
   cases q with
   | scan r       => exact rewriteLeaf_touched cat P prin (.scan r) q' h
   | project p cs => exact rewriteLeaf_touched cat P prin (.project p cs) q' h
-  | filter p c   => exact rewriteLeaf_touched cat P prin (.filter p c) q' h
+  | filter p φ   => exact rewriteLeaf_touched cat P prin (.filter p φ) q' h
   | aggregate op col gb inner =>
     exact rewriteLeaf_touched cat P prin (.aggregate op col gb inner) q' h
   | join l r on =>
@@ -691,7 +756,7 @@ theorem rewrite_schema_subset
   cases q with
   | scan r       => exact rewriteLeaf_schema_subset cat P prin (.scan r) q' h c hc
   | project p cs => exact rewriteLeaf_schema_subset cat P prin (.project p cs) q' h c hc
-  | filter p c'  => exact rewriteLeaf_schema_subset cat P prin (.filter p c') q' h c hc
+  | filter p φ   => exact rewriteLeaf_schema_subset cat P prin (.filter p φ) q' h c hc
   | aggregate op col gb inner =>
     exact rewriteLeaf_schema_subset cat P prin (.aggregate op col gb inner) q' h c hc
   | join l r on =>
@@ -764,10 +829,10 @@ theorem rewrite_sound
     unfold Policy.allowedOutputsRels
     rw [List.mem_flatMap]
     exact ⟨_, hShape, hLeaf⟩
-  | filter p c' =>
-    have hLeaf := rewriteLeaf_sound cat P prin (.filter p c') q' h c hc
-    show c ∈ Policy.allowedOutputsRels P prin (Plan.touchedRels (.filter p c')) _
-    have hShape : (Plan.filter p c').touched ∈ (Plan.filter p c').touchedRels :=
+  | filter p φ =>
+    have hLeaf := rewriteLeaf_sound cat P prin (.filter p φ) q' h c hc
+    show c ∈ Policy.allowedOutputsRels P prin (Plan.touchedRels (.filter p φ)) _
+    have hShape : (Plan.filter p φ).touched ∈ (Plan.filter p φ).touchedRels :=
       Plan.touched_mem_touchedRels _
     unfold Policy.allowedOutputsRels
     rw [List.mem_flatMap]
@@ -903,9 +968,9 @@ theorem rewrite_filter_sound
     unfold Policy.allowedRels
     rw [List.mem_flatMap]
     exact ⟨_, hShape, hLeaf⟩
-  | filter p c' =>
-    have hLeaf := rewriteLeaf_filter_sound cat P prin (.filter p c') q' h c hc
-    have hShape : (Plan.filter p c').touched ∈ (Plan.filter p c').touchedRels :=
+  | filter p φ =>
+    have hLeaf := rewriteLeaf_filter_sound cat P prin (.filter p φ) q' h c hc
+    have hShape : (Plan.filter p φ).touched ∈ (Plan.filter p φ).touchedRels :=
       Plan.touched_mem_touchedRels _
     unfold Policy.allowedRels
     rw [List.mem_flatMap]
@@ -1117,20 +1182,20 @@ theorem rewrite_monotone
                   (.project p cs)).contains ·) :=
       List.mem_filter.mpr ⟨hcOrig, List.contains_iff_mem.mpr hAllow'⟩
     exact List.contains_iff_mem.mpr h_in_cs'
-  | filter p c' =>
-    have hAllow  : c ∈ P.allowedOutputs  prin (Plan.filter p c').touched
-                          (.filter p c') :=
-      rewriteLeaf_sound cat P prin (.filter p c') q1 h1 c hc
-    have hAllow' : c ∈ P'.allowedOutputs prin (Plan.filter p c').touched
-                          (.filter p c') := hSub _ _ _ _ hAllow
+  | filter p φ =>
+    have hAllow  : c ∈ P.allowedOutputs  prin (Plan.filter p φ).touched
+                          (.filter p φ) :=
+      rewriteLeaf_sound cat P prin (.filter p φ) q1 h1 c hc
+    have hAllow' : c ∈ P'.allowedOutputs prin (Plan.filter p φ).touched
+                          (.filter p φ) := hSub _ _ _ _ hAllow
     obtain ⟨_, _, _, _, hq2⟩ := rewriteLeaf_accept_inversion cat P' prin
-                                  (.filter p c') q2 h2
+                                  (.filter p φ) q2 h2
     subst hq2
     refine List.mem_filter.mpr ⟨hcOrig, ?_⟩
     have h_in_cs' :
-        c ∈ ((Plan.filter p c').schema cat).filter
-              ((P'.allowedOutputs prin (Plan.filter p c').touched
-                  (.filter p c')).contains ·) :=
+        c ∈ ((Plan.filter p φ).schema cat).filter
+              ((P'.allowedOutputs prin (Plan.filter p φ).touched
+                  (.filter p φ)).contains ·) :=
       List.mem_filter.mpr ⟨hcOrig, List.contains_iff_mem.mpr hAllow'⟩
     exact List.contains_iff_mem.mpr h_in_cs'
   | aggregate op col gb inner =>
@@ -1167,7 +1232,7 @@ theorem rewrite_refuses_unknown
   cases q with
   | scan r       => exact rewriteLeaf_refuses_unknown cat P prin (.scan r) hEmpty
   | project p cs => exact rewriteLeaf_refuses_unknown cat P prin (.project p cs) hEmpty
-  | filter p c   => exact rewriteLeaf_refuses_unknown cat P prin (.filter p c) hEmpty
+  | filter p φ   => exact rewriteLeaf_refuses_unknown cat P prin (.filter p φ) hEmpty
   | aggregate op col gb inner =>
     exact rewriteLeaf_refuses_unknown cat P prin (.aggregate op col gb inner) hEmpty
   | join l r on =>
@@ -1197,8 +1262,8 @@ theorem rewrite_refuses_forbidden_filter
     exact rewriteLeaf_refuses_forbidden_filter cat P prin (.scan r) c hCat hMem hNotAllow
   | project p cs =>
     exact rewriteLeaf_refuses_forbidden_filter cat P prin (.project p cs) c hCat hMem hNotAllow
-  | filter p c'  =>
-    exact rewriteLeaf_refuses_forbidden_filter cat P prin (.filter p c') c hCat hMem hNotAllow
+  | filter p φ   =>
+    exact rewriteLeaf_refuses_forbidden_filter cat P prin (.filter p φ) c hCat hMem hNotAllow
   | aggregate op col gb inner =>
     exact rewriteLeaf_refuses_forbidden_filter cat P prin
             (.aggregate op col gb inner) c hCat hMem hNotAllow
@@ -1364,6 +1429,69 @@ theorem rewrite_refuses_forbidden_aggregate
     · subst hq
       exact rewriteLeaf_refuses_forbidden_aggregate cat P prin _ op col hCat hMem hNotAdm
 
+/-! ## Predicate-level coverage condition (paper §4 Theorem 13)
+
+  Pointwise restatement of `rewrite_filter_sound` at the `Pred`
+  level. The two are inter-derivable: every column read by a
+  `Filter` predicate appears in `Plan.filterCols`, and conversely
+  every `c ∈ Plan.filterCols` is the free-column of some predicate
+  reachable in the plan. Stated at the φ level so the coverage
+  condition reads as a property of *every individual predicate term*
+  rather than of the aggregated column list. -/
+
+/-- `Plan.preds q` — every `Pred` term appearing at a `Filter` node
+    inside `q`. Outer-to-inner order, no dedup. -/
+def Plan.preds : Plan → List Pred
+  | .scan _            => []
+  | .project p _       => p.preds
+  | .filter  p φ       => φ :: p.preds
+  | .join l r _        => l.preds ++ r.preds
+  | .aggregate _ _ _ p => p.preds
+
+/-- Connection between `Plan.preds` and `Plan.filterCols`: the
+    filterCols of `q` are exactly the concatenation of `freeCols`
+    over every predicate in `q.preds`. Proved by induction on the
+    plan structure. -/
+private theorem filterCols_eq_flatMap_preds (q : Plan) :
+    q.filterCols = q.preds.flatMap Pred.freeCols := by
+  induction q with
+  | scan _      => simp [Plan.filterCols, Plan.preds, List.flatMap]
+  | project _ _ ih => simp [Plan.filterCols, Plan.preds, ih]
+  | filter  _ φ ih =>
+    simp [Plan.filterCols, Plan.preds, List.flatMap, ih]
+  | join l r _ ihL ihR =>
+    simp [Plan.filterCols, Plan.preds, List.flatMap_append, ihL, ihR]
+  | aggregate _ _ _ _ ih =>
+    simp [Plan.filterCols, Plan.preds, ih]
+
+/-- If `φ ∈ q.preds` then every free column of `φ` is in
+    `q.filterCols`. Mechanical consequence of the equation above. -/
+private theorem freeCols_subset_filterCols
+    (q : Plan) (φ : Pred) (hφ : φ ∈ q.preds)
+    (c : Column) (hc : c ∈ φ.freeCols) :
+    c ∈ q.filterCols := by
+  rw [filterCols_eq_flatMap_preds]
+  exact List.mem_flatMap.mpr ⟨φ, hφ, hc⟩
+
+/-- **Theorem 13 — predicate-level coverage condition
+    (`rewrite_filter_coverage`).** For every accepted plan, for every
+    `Filter` predicate `φ` that appears in the rewritten plan, every
+    free column of `φ` lies in the principal's allowed set (extended
+    over the plan's `touchedRels`). Pointwise restatement of
+    `rewrite_filter_sound` (Theorem 2); closes the side-channel where
+    a compound predicate `f(x_1, …, x_n)` is rejected iff *any one*
+    `x_i` references a forbidden column, even if every other
+    reference is allowed. -/
+theorem rewrite_filter_coverage
+    (cat : Catalog) (P : Policy) (prin : Principal) (q q' : Plan) :
+    rewrite cat P prin q = some q' →
+    ∀ φ, φ ∈ q'.preds →
+    ∀ c, c ∈ φ.freeCols →
+    c ∈ P.allowedRels prin q.touchedRels := by
+  intro h φ hφ c hc
+  exact rewrite_filter_sound cat P prin q q' h c
+    (freeCols_subset_filterCols q' φ hφ c hc)
+
 /-! ## Demonstration -/
 
 namespace Demo
@@ -1400,11 +1528,28 @@ def pol : Policy := {
   ]
 }
 
-#eval (rewrite cat pol "CRM" (.filter (.scan "users_data") "region")).map (·.schema cat)
+/-- `region = "EU"` — predicate references only the `region` column. -/
+private def regionEU : Pred :=
+  .app "=" [.ref "region", .lit "EU"]
+
+/-- `ssn = "..."` — references the forbidden `ssn` column directly. -/
+private def ssnEq : Pred :=
+  .app "=" [.ref "ssn", .lit "REDACTED"]
+
+/-- `region = "EU" ∧ ssn = "..."` — compound predicate touching one
+    allowed and one forbidden column. The coverage condition rejects
+    the whole predicate even though `region` alone would be fine. -/
+private def regionAndSsn : Pred :=
+  .app "and" [regionEU, ssnEq]
+
+#eval (rewrite cat pol "CRM" (.filter (.scan "users_data") regionEU)).map (·.schema cat)
 -- expected: some ["id", "name", "region", "age"]
 
-#eval rewrite cat pol "CRM" (.filter (.scan "users_data") "ssn")
--- expected: none  -- filter on forbidden column ⇒ refuse
+#eval rewrite cat pol "CRM" (.filter (.scan "users_data") ssnEq)
+-- expected: none  -- predicate refs forbidden column ⇒ refuse
+
+#eval rewrite cat pol "CRM" (.filter (.scan "users_data") regionAndSsn)
+-- expected: none  -- compound predicate with one forbidden ref ⇒ refuse
 
 #eval rewrite cat pol "CRM" (.scan "credit_bureau_imports")
 -- expected: none  -- unknown relation ⇒ refuse

@@ -69,10 +69,32 @@ def encAggOp : AggOp → String
   | .max   => Json.str "max"
   | .avg   => Json.str "avg"
 
+/-- Predicate-term encoder. Mirrors the Rust `Pred` enum's serde
+    representation (`{"kind": "ref"|"lit"|"app", ...}`). Uses the
+    `args.attach` recursion shape so Lean's termination checker
+    accepts the nested call without a wf-recursion clause — the
+    JSON encoder isn't in the proof surface, so we keep it
+    structurally simple. -/
+def encPred : Pred → String
+  | .ref c       =>
+    Json.obj [("kind", Json.str "ref"), ("col", Json.str c)]
+  | .lit v       =>
+    Json.obj [("kind", Json.str "lit"), ("val", Json.str v)]
+  | .app op args =>
+    Json.obj [
+      ("kind", Json.str "app"),
+      ("op",   Json.str op),
+      ("args", Json.arr (args.attach.map (fun ⟨a, _⟩ => encPred a)))
+    ]
+decreasing_by
+  have h := List.sizeOf_lt_of_mem (by assumption)
+  simp_wf
+  omega
+
 def encPlan : Plan → String
   | .scan r       => Json.obj [("op", Json.str "scan"),    ("rel", Json.str r)]
   | .project p cs => Json.obj [("op", Json.str "project"), ("sub", encPlan p), ("cols", Json.strArr cs)]
-  | .filter  p c  => Json.obj [("op", Json.str "filter"),  ("sub", encPlan p), ("col", Json.str c)]
+  | .filter  p φ  => Json.obj [("op", Json.str "filter"),  ("sub", encPlan p), ("pred", encPred φ)]
   | .join l r on  =>
     Json.obj [
       ("op",    Json.str "join"),
@@ -124,6 +146,11 @@ def planRels : Plan → List Relation
   | .join l r _          => planRels l ++ planRels r
   | .aggregate _ _ _ p   => planRels p
 
+/-- Convenience: `Pred.ref c` lifted to the bare-column smart-
+    constructor style used by older corpus entries. The bare-column
+    pre-C2 form `.filter sub col` is now `.filter sub (refCol col)`. -/
+def refCol (c : Column) : Pred := .ref c
+
 def policyRels (P : Policy) : List Relation :=
   P.grants.map Grant.relation ++ P.aggGrants.map AggGrant.relation
 
@@ -173,11 +200,11 @@ def cases : List Case := [
 
   { name := "crm_filters_by_region", note := "behavioural — filter on allowed col",
     catalog := Demo.cat, policy := Demo.pol, principal := "CRM",
-    plan := .filter (.scan "users_data") "region" },
+    plan := .filter (.scan "users_data") (refCol "region") },
 
   { name := "crm_overprojects_then_filters", note := "behavioural — agent asks for forbidden cols",
     catalog := Demo.cat, policy := Demo.pol, principal := "CRM",
-    plan := .project (.filter (.scan "users_data") "region")
+    plan := .project (.filter (.scan "users_data") (refCol "region"))
                      ["id", "name", "email", "ssn"] },
 
   { name := "cardops_scans_cards", note := "behavioural — CardOps happy path",
@@ -210,12 +237,12 @@ def cases : List Case := [
   { name := "filter_on_forbidden_column_refused",
     note := "regression — filter side-channel: CRM cannot filter on ssn even if ssn isn't projected",
     catalog := Demo.cat, policy := Demo.pol, principal := "CRM",
-    plan := .filter (.scan "users_data") "ssn" },
+    plan := .filter (.scan "users_data") (refCol "ssn") },
 
   { name := "nested_filter_one_forbidden_refused",
     note := "regression — deeply-nested filter on forbidden col still refuses",
     catalog := Demo.cat, policy := Demo.pol, principal := "CRM",
-    plan := .filter (.filter (.scan "users_data") "region") "email" },
+    plan := .filter (.filter (.scan "users_data") (refCol "region")) (refCol "email") },
 
   { name := "project_of_already_redacted_columns",
     note := "behavioural — over-project: ssn/email dropped to empty",
@@ -322,7 +349,52 @@ def cases : List Case := [
   { name := "agg_groupBy_forbidden_column_refused",
     note := "C3 REFUSE — groupBy on a column not in allowed (`merchant` for Analytics, no column-grant)",
     catalog := Demo.cat, policy := Demo.pol, principal := "Analytics",
-    plan := .aggregate .sum "amount" ["merchant"] (.scan "transactions_data") }
+    plan := .aggregate .sum "amount" ["merchant"] (.scan "transactions_data") },
+
+  -- §F. Predicate-IR cases (C2 — paper §4 Theorem 13).
+  --
+  -- These exercise the coverage condition at the φ level: every
+  -- free column of every Filter predicate must be policy-allowed.
+  --   F1 ACCEPT — compound predicate `region = "EU"` (only refs allowed).
+  --   F2 REFUSE — direct forbidden ref under an operator wrapper.
+  --   F3 REFUSE — conjunction with one forbidden ref taints the whole.
+  --   F4 REFUSE — disjunction with one forbidden ref same shape.
+  --   F5 ACCEPT — negation over an allowed ref.
+  { name := "pred_compound_allowed_only_accepts",
+    note := "C2 ACCEPT — `region = \"EU\"` (compound predicate, only refs allowed columns)",
+    catalog := Demo.cat, policy := Demo.pol, principal := "CRM",
+    plan := .filter (.scan "users_data")
+              (.app "=" [.ref "region", .lit "EU"]) },
+
+  { name := "pred_direct_forbidden_ref_refused",
+    note := "C2 REFUSE — `ssn = \"X\"` (forbidden ref wrapped in operator)",
+    catalog := Demo.cat, policy := Demo.pol, principal := "CRM",
+    plan := .filter (.scan "users_data")
+              (.app "=" [.ref "ssn", .lit "X"]) },
+
+  { name := "pred_and_one_forbidden_refused",
+    note := "C2 REFUSE — `region = \"EU\" AND ssn = \"X\"` (conjunction; one forbidden ref taints the whole)",
+    catalog := Demo.cat, policy := Demo.pol, principal := "CRM",
+    plan := .filter (.scan "users_data")
+              (.app "and" [
+                .app "=" [.ref "region", .lit "EU"],
+                .app "=" [.ref "ssn", .lit "X"]
+              ]) },
+
+  { name := "pred_or_one_forbidden_refused",
+    note := "C2 REFUSE — `region = \"EU\" OR email = \"x@y\"` (disjunction; one forbidden ref taints the whole)",
+    catalog := Demo.cat, policy := Demo.pol, principal := "CRM",
+    plan := .filter (.scan "users_data")
+              (.app "or" [
+                .app "=" [.ref "region", .lit "EU"],
+                .app "=" [.ref "email", .lit "x@y"]
+              ]) },
+
+  { name := "pred_not_allowed_accepts",
+    note := "C2 ACCEPT — `NOT (age = 18)` (negation over allowed ref)",
+    catalog := Demo.cat, policy := Demo.pol, principal := "CRM",
+    plan := .filter (.scan "users_data")
+              (.app "not" [.app "=" [.ref "age", .lit "18"]]) }
 ]
 
 def encCase (c : Case) : String :=

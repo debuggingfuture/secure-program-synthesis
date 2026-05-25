@@ -19,18 +19,22 @@ abstract: |
   \mathit{Principal} \to \mathit{Plan} \to \mathit{Option}\
   \mathit{Plan}$ mechanised in Lean~4 [@lean4], inspired by
   Cedar's Lean authorization core [@cedar2024] but stated over
-  plan-level outputs rather than per-request decisions, with nine
-  `sorry`-free theorems (axioms bounded by `propext` and
-  `Quot.sound`) plus a partly-mechanised Horn-fragment Datalog
-  evaluator; (ii) a Rust capability-tracking layer inspired by
-  Odersky et al. [@capabilities-agents-2026] — invariant brand
-  lifetimes, sealed types, opaque-receipt sinks; and (iii) a
+  plan-level outputs rather than per-request decisions, with
+  thirteen `sorry`-free theorems (axioms bounded by `propext`
+  and `Quot.sound`) — including the predicate-level coverage
+  condition
+  $\mathit{free}(\varphi) \subseteq P.\mathit{allowed}\ p\ \mathit{touched}(q)$
+  — plus a partly-mechanised Horn-fragment Datalog evaluator;
+  (ii) a Rust capability-tracking layer inspired by Odersky et
+  al. [@capabilities-agents-2026] — invariant brand lifetimes,
+  sealed types, opaque-receipt sinks; and (iii) a
   reference-conformance harness binding Rust to the Lean
-  reference on 21 cases. We evaluate on the Kaggle
+  reference on 31 cases. We evaluate on the Kaggle
   `transactions-fraud-datasets` schema and identify Biscuit
-  attenuation, audience, expiry, key rotation, cross-relation
-  joins, and differentially-private aggregation as the principal
-  open problems.
+  attenuation, audience, expiry, key rotation, the
+  mutual-information half of the filter side-channel, and
+  differentially-private aggregation as the principal open
+  problems.
 keywords:
   - access control
   - formal verification
@@ -78,7 +82,9 @@ harness binding the two.
 
 ## Contributions
 
-1. A Plan IR ($\mathit{Scan}$/$\mathit{Project}$/$\mathit{Filter}$),
+1. A Plan IR
+   ($\mathit{Scan}$/$\mathit{Project}$/$\mathit{Filter}(\varphi)$/$\mathit{Join}$/$\mathit{Aggregate}$,
+   where $\varphi \in \mathit{Pred}$ is a predicate term),
    a Biscuit-Datalog policy language (Horn-fragment with ground
    `right(p, r, c)` facts compiled from the surface column-grant
    syntax), and a rewriter, mechanised in Lean~4 [@lean4]. The
@@ -86,31 +92,31 @@ harness binding the two.
    core [@cedar2024]; we transpose the technique from per-request
    $\mathit{authorize}$ decisions to plan-level outputs over an
    IR, and so prove soundness of a *transformation* rather than a
-   classification. The rewriter side comprises nine `sorry`-free
-   theorems:
-   output-column soundness, filter-predicate soundness, schema
-   subset, no-new-columns, idempotence under repeated application,
-   monotonicity in the policy, touched-relation preservation,
-   and explicit-refusal lemmas for unknown relations and for
-   filter predicates over forbidden columns (§4). The Datalog evaluator
+   classification. The rewriter side comprises thirteen
+   `sorry`-free theorems: output-column soundness,
+   filter-predicate soundness (column-list and pointwise
+   $\varphi$-level forms), schema subset, no-new-columns,
+   idempotence under repeated application, monotonicity in the
+   policy, touched-relation preservation, explicit-refusal lemmas
+   for unknown relations / forbidden filters / forbidden joins,
+   join-key leak coverage, and the abstract DP-boundary
+   soundness for aggregation (§4). The Datalog evaluator
    (`verifier/lean/Datalog.lean`) contributes a fully proved
-   `eval_monotone` theorem — the underlying combinatorial obligation
-   `herbrandBound_mono` is now discharged from `Init` stdlib
-   primitives (no Mathlib) via three derived helpers
+   `eval_monotone` theorem — the underlying combinatorial
+   obligation `herbrandBound_mono` is now discharged from `Init`
+   stdlib primitives (no Mathlib) via three derived helpers
    (`nodup_eraseDups`, `length_le_eraseDups_of_nodup_subset`,
-   `maxArity_mono`). Four `sorry`-free
-   specialisation lemmas cover the rule-free regime that all
-   our scenarios use today. Two further evaluator meta-theorems
-   remain residual: `eval_sound` is stated with a `sorryAx`
-   obligation, and `eval_terminates` is stated in its
-   membership-stable form (with the reverse direction proved and
-   the saturation direction reduced via the auxiliary
+   `maxArity_mono`). Four `sorry`-free specialisation lemmas
+   cover the rule-free regime that all our scenarios use today.
+   Two further evaluator meta-theorems remain residual:
+   `eval_sound` is stated with a `sorryAx` obligation, and
+   `eval_terminates` is stated in its membership-stable form
+   (with the reverse direction proved and the saturation
+   direction reduced via the auxiliary
    `iterate_stable_of_step_stable` to a finite-Herbrand-base
    pigeonhole that is the remaining `sorry`). Both residuals are
-   named explicitly in `CheckAxioms.lean`.
-   Axiom dependencies for proved declarations are bounded by
-   `propext` and `Quot.sound`; two rewriter theorems depend on
-   none.
+   named explicitly in `CheckAxioms.lean`. Axiom dependencies for
+   proved declarations are bounded by `propext` and `Quot.sound`.
 
 2. A Rust capability-tracking layer (`postern-guardrail`)
    implementing three composable mechanisms: sealed
@@ -128,9 +134,11 @@ harness binding the two.
    structurally mirroring the Lean reference, and a
    reference-conformance harness (`postern-diff`) that asserts
    byte-equivalence between the Rust output and the Lean
-   reference on a corpus of 21 hand-curated cases (16 accept, 5
+   reference on a corpus of 31 hand-curated cases (19 accept, 12
    refusal — including three cases exercising the cross-relation
-   join arm). The gateway's Datalog evaluation surface is
+   join arm, five exercising the aggregation / DP-boundary arm,
+   and five exercising the predicate-IR coverage condition of
+   Theorem 13). The gateway's Datalog evaluation surface is
    implemented directly against `biscuit-auth`'s public
    `biscuit_auth::datalog::World` evaluator [@biscuit] in
    `postern-core::datalog`, and is exercised by a *second*
@@ -153,20 +161,34 @@ harness binding the two.
 
 We state the IR before the threat model so §2 may reference its
 operators directly. Plans are single-relation expressions built
-from three constructors:
+from three constructors (extended with $\mathit{Join}$ and
+$\mathit{Aggregate}$ in §4 — see Theorems 11–12):
 $$
-  \mathit{Plan} \;::=\; \mathit{Scan}(r) \mid \mathit{Project}(\mathit{Plan}, \mathit{cs}) \mid \mathit{Filter}(\mathit{Plan}, c)
+  \mathit{Plan} \;::=\; \mathit{Scan}(r) \mid \mathit{Project}(\mathit{Plan}, \mathit{cs}) \mid \mathit{Filter}(\mathit{Plan}, \varphi)
 $$
-where $r \in \mathit{Relation}$, $c \in \mathit{Column}$, and
-$\mathit{cs} \in \mathit{List}\ \mathit{Column}$. We write
-$\sigma(q)$ for the output schema of plan $q$ under a catalog
-$\mathit{cat}$, defined inductively:
+where $r \in \mathit{Relation}$,
+$\mathit{cs} \in \mathit{List}\ \mathit{Column}$, and $\varphi$ is
+a *predicate term* drawn from
+$$
+  \mathit{Pred} \;::=\; \mathit{Ref}(c) \mid \mathit{Lit}(v) \mid \mathit{App}(\mathit{op}, [\varphi_1, \dots, \varphi_n])
+$$
+with $c \in \mathit{Column}$, $v \in \mathit{Value}$, and
+$\mathit{op}$ an opaque operator label (`=`, `and`, `or`, `not`, …).
+The rewriter does not interpret operators; it only computes the
+*free-column set* $\mathit{free}(\varphi)$, the multiset of columns
+referenced by $\varphi$:
+$\mathit{free}(\mathit{Ref}(c)) = [c]$;
+$\mathit{free}(\mathit{Lit}(v)) = []$;
+$\mathit{free}(\mathit{App}(\_, \vec{\varphi})) = \bigcup_i \mathit{free}(\varphi_i)$.
+We write $\sigma(q)$ for the output schema of plan $q$ under a
+catalog $\mathit{cat}$, defined inductively:
 $\sigma(\mathit{Scan}(r)) = \mathit{cat}(r)$;
 $\sigma(\mathit{Project}(p, \mathit{cs})) = \sigma(p) \cap \mathit{cs}$;
-$\sigma(\mathit{Filter}(p, c)) = \sigma(p)$. The asymmetry between
-$\mathit{Project}$ (which alters the output schema) and
-$\mathit{Filter}$ (which does not, despite reading $c$) is the
-source of the *filter side-channel* discussed in §2.
+$\sigma(\mathit{Filter}(p, \varphi)) = \sigma(p)$. The asymmetry
+between $\mathit{Project}$ (which alters the output schema) and
+$\mathit{Filter}$ (which does not, despite reading every column
+in $\mathit{free}(\varphi)$) is the source of the *filter
+side-channel* discussed in §2.
 
 # Threat model
 
@@ -191,13 +213,18 @@ DuckDB + Parquet store. All other parties are untrusted.
 The attacks within scope of the formal model are: (i) over-
 projection of forbidden columns; (ii) *reference* to a forbidden
 column inside a filter predicate, addressed by
-`rewrite_filter_sound` — the $\mathit{Filter}$ constructor carries
-only a column name (no predicate value or operator), so the
-theorem rules out the principal *naming* a forbidden column in a
-filter, not value-probing exfiltration through allowed columns
+`rewrite_filter_sound` and (pointwise, at the $\varphi$ level) by
+`rewrite_filter_coverage` — the $\mathit{Filter}$ constructor
+carries a predicate term $\varphi \in \mathit{Pred}$, and the
+theorem rules out *any* free column of $\varphi$ being forbidden;
+this includes the compound case
+$\mathit{region} = \texttt{"EU"} \wedge \mathit{ssn} = \texttt{"X"}$,
+which is rejected wholesale, but does *not* rule out value-probing
+exfiltration through allowed columns
 (`WHERE region = 'EU'` followed by row-count observation), which
-is out of scope (§6); (iii) scan of a relation absent from the
-catalog, addressed by `rewrite_refuses_unknown`; (iv) cross-
+is out of scope and tracked as the mutual-information half of the
+filter side-channel in §6; (iii) scan of a relation absent from
+the catalog, addressed by `rewrite_refuses_unknown`; (iv) cross-
 departmental reach by a principal lacking matching grants; and
 (v) unknown principals, which we *collapse to an empty output
 schema* (not refusal) via the empty-allow convention — the
@@ -261,16 +288,21 @@ human-readable documentation of the same `Grant` list.
 
 ```
 rewrite cat P prin q :=
-  if cat q.touched = [] then     none                          -- unknown relation
-  else if ¬ q.filterCols ⊆ allow then  none                    -- forbidden filter col
+  if cat q.touched = [] then           none                    -- unknown relation
+  else if ¬ q.filterCols ⊆ allow then  none                    -- predicate refs forbidden col
   else
     some (Project q (q.schema cat ∩ allow))
-  where allow := P.allowed prin q.touched
+  where allow      := P.allowed prin q.touched
+        filterCols := ⋃ { free(φ) | Filter(_, φ) appears in q }
 ```
 
-Post-hoc projection is the simplest algorithm that admits a clean
-soundness proof. Predicate-pushdown variants can be verified
-against this rewriter as a reference; we leave that to future work.
+The aggregated read-set $\mathit{filterCols}(q)$ is the union of
+$\mathit{free}(\varphi)$ over every $\mathit{Filter}$ node in $q$;
+the coverage condition (the second `if`) requires that union to
+lie inside $\mathit{allow}$. Post-hoc projection is the simplest
+algorithm that admits a clean soundness proof. Predicate-pushdown
+variants can be verified against this rewriter as a reference; we
+leave that to future work.
 
 ## Static reference, dynamic gateway
 
@@ -619,18 +651,44 @@ threshold semantics) remains open and is itemised in §6 — the Lean
 scaffold lands the boundary's *interface*, not its quantitative
 content.
 
+**Theorem 13 (predicate-level coverage condition,
+`rewrite_filter_coverage`).** Under the same hypothesis as Theorem
+2, for every predicate term $\varphi$ that appears at a
+$\mathit{Filter}$ node inside $q'$, and for every column
+$c \in \mathit{free}(\varphi)$,
+$c \in P.\mathit{allowedRels}\ p\ \mathit{touchedRels}(q)$. This is
+the pointwise restatement of Theorem 2 at the $\varphi$ level:
+every *individual* filter predicate's free-column set is
+policy-allowed. The strengthening over Theorem 2 is one of
+presentation, not of strength — the two are inter-derivable via
+the equation
+$\mathit{filterCols}(q') = \bigcup_{\varphi \in \mathit{preds}(q')} \mathit{free}(\varphi)$,
+proved by induction on the plan structure. The point of stating it
+separately is that a compound predicate such as
+$\mathit{region} = \texttt{"EU"} \wedge \mathit{ssn} = \texttt{"X"}$
+is rejected iff *any one* of its free columns is forbidden — the
+coverage condition does not admit "the other refs were fine"
+partial credit, and the corpus of §5 exercises this with five
+predicate-IR cases (compound allowed-only accept, direct forbidden
+ref refuse, conjunction with one forbidden ref refuse, disjunction
+with one forbidden ref refuse, negation over allowed ref accept).
+
 `CheckAxioms.lean` audits the axiom dependencies of each theorem.
-For Theorems 1, 2, 3, 4, 7, 8, 10, 11, 12 the set is bounded by
-$\{\texttt{propext}, \texttt{Quot.sound}\}$, Lean~4's foundational
-axioms, with no `sorry`. Theorems 5, 6, and 9 are fully proved on
-the non-$\mathit{Join}$ arm; the $\mathit{Join}$-arm composition
-(per-leg idempotence into Join-idempotence; widening through a
-two-leg key check; cross-leg forbidden filter) is isolated as
-$\texttt{sorryAx}$ in the audit and listed in §6 as the residual
-proof surface. Theorem 12 is stated for non-$\mathit{Join}$ inputs
-(the Aggregate-inside-Join lift is a one-line corollary on top of
-the join soundness machinery already in place — `Plan.aggregates`
-distributes over $\mathit{Join}$'s two legs).
+For Theorems 1, 2, 3, 4, 7, 8, 10, 11, 12, 13 the set is bounded
+by $\{\texttt{propext}, \texttt{Quot.sound}\}$, Lean~4's
+foundational axioms, with no `sorry`. (The $\mathit{Pred}$
+free-column recursion walks nested $\mathit{List}\ \mathit{Pred}$
+through `List.attach`, which pulls $\texttt{Quot.sound}$
+uniformly across every theorem that unfolds the rewriter.)
+Theorems 5, 6, and 9 are fully proved on the non-$\mathit{Join}$
+arm; the $\mathit{Join}$-arm composition (per-leg idempotence into
+Join-idempotence; widening through a two-leg key check; cross-leg
+forbidden filter) is isolated as $\texttt{sorryAx}$ in the audit
+and listed in §6 as the residual proof surface. Theorem 12 is
+stated for non-$\mathit{Join}$ inputs (the Aggregate-inside-Join
+lift is a one-line corollary on top of the join soundness
+machinery already in place — `Plan.aggregates` distributes over
+$\mathit{Join}$'s two legs).
 
 **Datalog evaluator (`verifier/lean/Datalog.lean`).** The policy
 language is mechanised independently. Eight supporting
@@ -711,7 +769,7 @@ mem-set is the semantics, since `step` is `flatMap`-based and
 does not dedup), while biscuit's `FactSet` is a `HashSet<Fact>`
 per origin and dedups on insertion. All nine cases pass.
 
-The corpus comprises 21 cases (16 accept, 5 refuse):
+The corpus comprises 31 cases (19 accept, 12 refuse):
 seven behavioural cases drawn from the financial-institution
 scenario of §5; three refusal regressions for known leaf-rewriter
 attack shapes (filter-on-forbidden-column, unknown-relation, one
@@ -721,11 +779,20 @@ to empty schema; over-projection of forbidden columns drops to
 empty); six policy-language edge cases (duplicate grants,
 catalog-absent columns, case-sensitive principal, trailing-
 whitespace principal, nonexistent project column, nested
-$\mathit{Project}$ narrowing); and three cross-relation join
-cases exercising the $\mathit{Join}$ arm — one accept (legal key
-on a shared allowed column), one refusal under join-key leak
-(forbidden key), and one refusal under a refusing right leg. All
-21 pass on the current Rust implementation.
+$\mathit{Project}$ narrowing); three cross-relation join cases
+exercising the $\mathit{Join}$ arm — one accept (legal key on a
+shared allowed column), one refusal under join-key leak (forbidden
+key), one refusal under a refusing right leg; five aggregation
+cases exercising the abstract DP boundary (one accept via
+$\mathit{AggGrant}$, one refusal without admissible coverage, one
+trivial accept dominated by an existing column-grant, one accept
+with empty group-by, one refusal on a forbidden group-by key); and
+**five predicate-IR cases exercising the coverage condition of
+Theorem 13** — a compound allowed-only predicate that must accept,
+a direct forbidden-reference under an operator wrapper that must
+refuse, a conjunction with one forbidden ref, a disjunction with
+one forbidden ref, and a negation over an allowed reference. All
+31 pass on the current Rust implementation.
 
 # Evaluation: a financial institution with three principals
 
@@ -846,20 +913,33 @@ case we discuss in §1.
 Four extensions of the Lean development are the natural next
 research questions.
 
-*Value-based predicate side-channels and a richer Filter.* The
-current $\mathit{Filter}$ constructor carries only a column name;
-the rewriter therefore enforces that a principal does not
-*reference* a forbidden column in a filter, but cannot reason about
-exfiltration through allowed columns whose values the agent
-probes (e.g. issuing one query per candidate `region` value and
-observing row counts). The natural extension introduces a
-predicate term $\varphi$ into the IR and adds a coverage
-condition: every free variable of $\varphi$ lies in
-$P.\mathit{allowed}\ p\ \mathit{touched}(q)$. The harder half is
-deciding when the *value* of an allowed column carries enough
-mutual information about a forbidden one to warrant blocking —
-the same problem space as the differential-privacy boundary
-below.
+*Value-channel inference (the mutual-information half of the
+filter side-channel).* Theorem 13 controls the *syntactic*
+free-column set $\mathit{free}(\varphi)$ of a filter predicate. It
+does **not** control inferences an agent can draw from the values
+of *allowed* columns whose distribution is mutually informative
+with a forbidden one. An agent that may filter on $\mathit{region}$
+but not read $\mathit{ssn}$ can, in the worst case, issue one
+query per candidate $\mathit{region}$ value and observe the row
+count — effectively reconstructing a partial projection of any
+forbidden column whose support is contained in the partition
+$\mathit{region}$ induces. The principled framing is that the
+gateway must control not merely *which columns* the agent
+references syntactically but the *mutual information* between the
+row-count signal it observes and any forbidden column. Quantifying
+this signal would lift the rewriter from a syntactic-projection
+oracle to a (parameterised) information-flow monitor: a candidate
+formalism is to attach a per-relation, per-principal *budget*
+$b \in \mathbb{R}_{\geq 0}$ and refuse any plan whose worst-case
+channel capacity from the released signal to the forbidden columns
+exceeds $b$, drawing on the differentially-private accountant line
+of work [@seal2023] and on faceted-information-flow tracking
+[@faceted-haskell]. Both lines suggest the soundness statement is
+non-trivial — even *deciding* the channel capacity for a
+parameterised query language is open-ended — and we leave the
+formalisation, the budget calculus, and the rewriter-time
+enforcement strategy as an open research question. The artifact
+ships the syntactic-coverage half of the side-channel only.
 
 *Cross-relation joins (residual obligations).* The Plan IR has
 been extended with a binary $\mathit{Join}(q_1, q_2,
@@ -939,22 +1019,21 @@ scripts/reproduce.sh
 ```
 
 Expected output ends with
-`26/26 cases pass (Lean reference == Rust impl)` for the
-rewriter corpus AND `9/9 datalog cases pass (Lean Datalog
-reference == biscuit_auth::datalog::World)` for the Datalog
-corpus, plus an axiom audit bounded by `propext` and
-`Quot.sound` for the fully-proved theorems (1–4, 7, 8, 10, 11,
-12, plus the three aggregation-specific theorems
-`rewrite_sound_aggregate`, `rewrite_groupBy_sound`,
-`rewrite_refuses_forbidden_aggregate`); `sorryAx` is isolated
-to two Datalog residuals (`eval_sound`, `eval_terminates`) and
-three $\mathit{Join}$-arm obligations of Theorems 5, 6, 9, all
-listed in §6. With `wasm-pack` present, the last step also emits
-`postern_wasm_bg.wasm` into `web/src/wasm/`. We do not quote a
-wall-clock budget — `time scripts/reproduce.sh` on the reader's
-hardware is the only honest measurement, and the dominant cost
-is the Lake fetch on a cold cache (Mathlib pull) rather than the
-proofs themselves.
+`31/31 cases pass (Lean reference == Rust impl)` for the rewriter
+corpus AND `9/9 datalog cases pass (Lean Datalog reference ==
+biscuit_auth::datalog::World)` for the Datalog corpus, plus an
+axiom audit bounded by `propext` and `Quot.sound` for the
+fully-proved theorems (1–4, 7, 8, 10, 11, 12, 13, plus the three
+aggregation-specific theorems `rewrite_sound_aggregate`,
+`rewrite_groupBy_sound`, `rewrite_refuses_forbidden_aggregate`);
+`sorryAx` is isolated to two Datalog residuals (`eval_sound`,
+`eval_terminates`) and three $\mathit{Join}$-arm obligations of
+Theorems 5, 6, 9, all listed in §6. With `wasm-pack` present, the
+last step also emits `postern_wasm_bg.wasm` into `web/src/wasm/`.
+We do not quote a wall-clock budget — `time scripts/reproduce.sh`
+on the reader's hardware is the only honest measurement, and the
+dominant cost is the Lake fetch on a cold cache (Mathlib pull)
+rather than the proofs themselves.
 
 # References
 
