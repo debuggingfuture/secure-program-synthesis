@@ -89,10 +89,10 @@ harness binding the two.
    classification. The rewriter side comprises nine `sorry`-free
    theorems:
    output-column soundness, filter-predicate soundness, schema
-   subset, idempotence under repeated application, monotonicity
-   in the policy, two no-new-column lemmas, and explicit-refusal
-   lemmas for unknown relations and for filter predicates over
-   forbidden columns (§4). The Datalog evaluator
+   subset, no-new-columns, idempotence under repeated application,
+   monotonicity in the policy, touched-relation preservation,
+   and explicit-refusal lemmas for unknown relations and for
+   filter predicates over forbidden columns (§4). The Datalog evaluator
    (`verifier/lean/Datalog.lean`) contributes a further
    `eval_monotone` theorem (proved modulo one isolated combinatorial
    obligation, `herbrandBound_mono`) plus four `sorry`-free
@@ -178,14 +178,25 @@ DuckDB + Parquet store. All other parties are untrusted.
 | DuckDB + Parquet store                     |   ✓   | Standard storage-engine assumptions apply.                      |
 
 The attacks within scope of the formal model are: (i) over-
-projection of forbidden columns; (ii) filter on a forbidden
-column (the side-channel addressed by `rewrite_filter_sound`);
-(iii) scan of a relation absent from the catalog (addressed by
-`rewrite_refuses_unknown`); (iv) cross-departmental reach by a
-principal lacking matching grants; and (v) unknown principals,
-which we treat fail-closed via the empty-allow convention.
+projection of forbidden columns; (ii) *reference* to a forbidden
+column inside a filter predicate, addressed by
+`rewrite_filter_sound` — the $\mathit{Filter}$ constructor carries
+only a column name (no predicate value or operator), so the
+theorem rules out the principal *naming* a forbidden column in a
+filter, not value-probing exfiltration through allowed columns
+(`WHERE region = 'EU'` followed by row-count observation), which
+is out of scope (§6); (iii) scan of a relation absent from the
+catalog, addressed by `rewrite_refuses_unknown`; (iv) cross-
+departmental reach by a principal lacking matching grants; and
+(v) unknown principals, which we *collapse to an empty output
+schema* (not refusal) via the empty-allow convention — the
+rewriter returns $\mathit{some}\ (\mathit{Project}\ q\ [])$, so
+the executor receives a syntactically valid plan that releases
+zero columns. A genuinely fail-closed variant that refuses
+unknown principals is a §6 follow-up.
 
 The following are deliberately out of scope and discussed in §6:
+value-based predicate side-channels through allowed columns;
 aggregation and inference attacks; covert channels through
 latency or row-count observation; multi-relation joins; biscuit
 attenuation modelled inside the Lean proof; policy synthesis
@@ -224,6 +235,15 @@ are never released regardless of which principal queries. The
 rewriter projects each plan's output schema down to the grant
 union under the querying principal and refuses plans whose
 filter predicates touch columns outside that union (§4).
+
+The surface syntax shown above is *illustrative*: the artifact
+does not ship a parser for `.postern` files. Every catalog and
+policy exercised by the Lean reference (`Demo.cat`, `Demo.pol`)
+and the Rust mirror (`postern_core::demo_policy`) is constructed
+directly as a list of `Grant` records. A parser is small enough
+to add but is not on the publication path; the
+`scenarios/financial-institution/policy.postern` file is
+human-readable documentation of the same `Grant` list.
 
 
 ## Rewriter
@@ -558,16 +578,18 @@ migration lands. A second conformance corpus, exercising Lean
 natural pair for the rewriter corpus and is queued as the next
 work item.
 
-The corpus comprises 18 cases: seven behavioural cases drawn
-from the financial-institution scenario of §5, four refusal
-regressions for known attack shapes
-(filter-on-forbidden-column, unknown-relation, two nested
-forbidden-filter variants), and seven policy-language edge cases
-(empty policy, duplicate grants, catalog-absent columns,
-case-sensitive principal, trailing-whitespace principal,
-nonexistent project column, nested $\mathit{Project}$
-narrowing). All eighteen pass on the current Rust
-implementation.
+The corpus comprises 18 cases (15 accept, 3 refuse):
+seven behavioural cases drawn from the financial-institution
+scenario of §5; three refusal regressions for known attack shapes
+(filter-on-forbidden-column, unknown-relation, one nested
+forbidden-filter variant); two acceptance regressions for the
+empty-projection collapse cases (unknown-principal collapses to
+empty schema; over-projection of forbidden columns drops to
+empty); and six policy-language edge cases (duplicate grants,
+catalog-absent columns, case-sensitive principal, trailing-
+whitespace principal, nonexistent project column, nested
+$\mathit{Project}$ narrowing). All eighteen pass on the current
+Rust implementation.
 
 # Evaluation: a financial institution with three principals
 
@@ -688,6 +710,21 @@ case we discuss in §1.
 Three extensions of the Lean development are the natural next
 research questions.
 
+*Value-based predicate side-channels and a richer Filter.* The
+current $\mathit{Filter}$ constructor carries only a column name;
+the rewriter therefore enforces that a principal does not
+*reference* a forbidden column in a filter, but cannot reason about
+exfiltration through allowed columns whose values the agent
+probes (e.g. issuing one query per candidate `region` value and
+observing row counts). The natural extension introduces a
+predicate term $\varphi$ into the IR and adds a coverage
+condition: every free variable of $\varphi$ lies in
+$P.\mathit{allowed}\ p\ \mathit{touched}(q)$. The harder half is
+deciding when the *value* of an allowed column carries enough
+mutual information about a forbidden one to warrant blocking —
+the same problem space as the differential-privacy boundary
+below.
+
 *Cross-relation joins.* The Plan IR is single-relation. The
 Rust implementation handles joins by per-leg rewriting but the
 composition is not under proof. The conjecture is a theorem of
@@ -725,23 +762,29 @@ integrity in transit.
 
 ```
 verifier/lean/   Lean 4 spec + theorems + corpus emitter
-prototype/       Rust workspace: postern-core, postern-diff
+prototype/       Rust workspace: postern-core, postern-diff,
+                 postern-guardrail, postern-wasm
 scenarios/       Financial-institution case study
-paper/           This document
+web/             Astro site with /paper, /slides, /demo
+paper/           This document + figures + build.sh
 scripts/         reproduce.sh — chains everything
 ```
 
-Toolchains: **Lean 4.29.1** (pinned in `verifier/lean/lean-toolchain`),
-**Rust stable** (tested 1.93). Single command:
+Toolchains: **Lean 4.29.1** (pinned in
+`verifier/lean/lean-toolchain`), **Rust stable** (tested 1.93),
+and optionally `wasm-pack` ≥ 0.13 if you want the `/demo`
+WASM bundle rebuilt from source (skipped with a notice
+otherwise — the proofs and conformance harness do not depend on
+it). Single command:
 
 ```sh
 scripts/reproduce.sh
 ```
 
-Expected output ends with
-`18/18 cases pass (Lean reference == Rust impl)` and an axiom
-audit showing only `propext` and `Quot.sound`. Runs in under
-two minutes on an M-series Mac on a warm cache.
+Expected output ends with `18/18 cases pass (Lean reference ==
+Rust impl)` and an axiom audit showing only `propext` and
+`Quot.sound`. With `wasm-pack` present, the last step emits
+`postern_wasm_bg.wasm` into `web/src/wasm/`.
 
 # References
 
