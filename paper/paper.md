@@ -279,6 +279,37 @@ the physical Parquet schema at evaluation time, and catalog drift
 between the snapshot and the store is itself an open problem
 listed in §6.
 
+## Cost at the gateway
+
+Online enforcement is cheap by construction. The rewriter is a
+single bottom-up traversal of the Plan tree: $O(|q|)$ node
+visits, each performing one catalog hash-lookup for a
+$\mathit{Scan}$, one set-membership check for a
+$\mathit{Filter}$, and one column-set intersection for a
+$\mathit{Project}$. With the natural index
+$P : (\mathit{Principal}, \mathit{Relation}) \mapsto
+\mathit{Set}\ \mathit{Column}$, the per-node policy lookup is
+$O(1)$ amortised, and the dominant per-request cost is the
+biscuit Ed25519 verification done once at the front of the
+gateway — sub-millisecond on commodity hardware
+[@biscuit]. *Nothing in the rewrite path reads rows*: the gateway
+returns an $\mathit{Option}\ \mathit{Plan}$ from inputs that
+fit in a few kilobytes, independent of lake size. The same
+algorithm runs in the browser-side WASM build powering §5's
+demo. Two practical consequences follow. First, the policy gate
+is comfortably online for interactive agent loops: the round
+trip is dominated by the downstream DuckDB/Polars execution and
+by network latency to the lake, not by the rewrite itself.
+Second, because the rewriter emits an explicit $\mathit{Project}$
+narrowing the output schema to the policy-allowed columns,
+downstream Parquet column-pruning [@duckdb] often makes the
+rewritten plan strictly *cheaper* to execute than the original —
+the policy gate can reduce I/O rather than impose it. This
+contrasts with row-level alternatives: per-engine RLS
+[@rls-postgres] evaluates a predicate per row, scaling with table
+size; an external policy-decision point such as OPA [@opa-rego]
+adds a network round-trip per query. Postern pays neither cost.
+
 ## Capability-bounded data flow
 
 The rewriter of §3 (Layer 1) constrains what data reaches the
