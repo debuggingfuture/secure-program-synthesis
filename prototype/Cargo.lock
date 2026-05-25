@@ -526,6 +526,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "postern-datalog-diff"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "postern-core",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "postern-diff"
 version = "0.1.0"
 dependencies = [

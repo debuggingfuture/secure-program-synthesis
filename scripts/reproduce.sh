@@ -18,21 +18,34 @@ echo "==> Lean: axiom audit (CheckAxioms.lean output)"
 # isolation to surface them on a clean console.
 lake env lean CheckAxioms.lean | grep -E "depends on axioms|does not depend on any axioms"
 
-echo "==> Lean: emit reference conformance corpus"
+echo "==> Lean: emit reference conformance corpora"
 lake exe postern-corpus > /tmp/postern-corpus-fresh.json
 if ! diff -q /tmp/postern-corpus-fresh.json \
               "$root/prototype/corpus/postern-corpus.json" >/dev/null; then
-  echo "    !! corpus drift detected — overwriting committed copy"
+  echo "    !! rewriter corpus drift detected — overwriting committed copy"
   cp /tmp/postern-corpus-fresh.json "$root/prototype/corpus/postern-corpus.json"
 fi
 wc -c "$root/prototype/corpus/postern-corpus.json"
 
-echo "==> Rust: unit tests"
+lake exe postern-datalog-corpus > /tmp/postern-datalog-corpus-fresh.json
+if ! diff -q /tmp/postern-datalog-corpus-fresh.json \
+              "$root/prototype/corpus/postern-datalog-corpus.json" >/dev/null; then
+  echo "    !! datalog corpus drift detected — overwriting committed copy"
+  cp /tmp/postern-datalog-corpus-fresh.json \
+     "$root/prototype/corpus/postern-datalog-corpus.json"
+fi
+wc -c "$root/prototype/corpus/postern-datalog-corpus.json"
+
+echo "==> Rust: unit tests (including datalog-biscuit feature)"
 cd "$root/prototype"
 cargo test --workspace --quiet
+cargo test -p postern-core --features datalog-biscuit --quiet
 
-echo "==> Conformance test: Lean reference vs. Rust impl"
+echo "==> Conformance test 1: Lean rewriter reference vs. Rust impl"
 cargo run -p postern-diff --quiet -- corpus/postern-corpus.json
+
+echo "==> Conformance test 2: Lean Datalog reference vs. biscuit_auth::datalog::World"
+cargo run -p postern-datalog-diff --quiet -- corpus/postern-datalog-corpus.json
 
 # Rebuild the WASM bundle that /demo loads, so a fresh clone can
 # reproduce the interactive demo from source — not just the proofs.

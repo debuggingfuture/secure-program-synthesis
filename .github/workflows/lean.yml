@@ -22,12 +22,21 @@ jobs:
         with:
           lake-package-directory: verifier/lean
           use-mathlib-cache: false
-      - name: emit corpus and check against committed copy
+      - name: emit rewriter corpus and check against committed copy
         working-directory: verifier/lean
         run: |
           lake exe postern-corpus > /tmp/fresh-corpus.json
           if ! diff -q /tmp/fresh-corpus.json ../../prototype/corpus/postern-corpus.json; then
-            echo "::error::corpus drift detected — regenerate with scripts/reproduce.sh and commit"
+            echo "::error::rewriter corpus drift detected — regenerate with scripts/reproduce.sh and commit"
             diff /tmp/fresh-corpus.json ../../prototype/corpus/postern-corpus.json | head -40
+            exit 1
+          fi
+      - name: emit datalog corpus and check against committed copy
+        working-directory: verifier/lean
+        run: |
+          lake exe postern-datalog-corpus > /tmp/fresh-datalog-corpus.json
+          if ! diff -q /tmp/fresh-datalog-corpus.json ../../prototype/corpus/postern-datalog-corpus.json; then
+            echo "::error::datalog corpus drift detected — regenerate with scripts/reproduce.sh and commit"
+            diff /tmp/fresh-datalog-corpus.json ../../prototype/corpus/postern-datalog-corpus.json | head -40
             exit 1
           fi
