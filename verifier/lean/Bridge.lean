@@ -40,9 +40,12 @@ def Grant.toFacts (g : Grant) : List Atom :=
 /-- Translate a column-grant policy to a rule-free Datalog program.
     The resulting program has the union of all per-grant facts and
     no rules — exactly the Biscuit-style "right(_, _, _) ground
-    facts only" regime the financial-institution scenario uses. -/
+    facts only" regime the financial-institution scenario uses.
+    `AggGrant`s do not participate in the standard column-grant
+    bridge — they encode the abstract DP boundary which lives
+    outside the Datalog evaluator's `right(_, _, _)` namespace. -/
 def Policy.toProgram (P : Policy) : Program :=
-  { facts := P.flatMap Grant.toFacts, rules := [] }
+  { facts := P.grants.flatMap Grant.toFacts, rules := [] }
 
 /-! ## Bridge theorem
 
@@ -193,7 +196,7 @@ theorem bridge_allowed (P : Policy) (prin : Principal) (rel : Relation) :
   rw [eval_no_rules_eq P.toProgram rfl]
   -- Step 2: unfold toProgram.facts.
   show P.allowed prin rel
-        = (P.flatMap Grant.toFacts).filterMap (rightProj prin rel)
+        = (P.grants.flatMap Grant.toFacts).filterMap (rightProj prin rel)
   -- Step 3: commute filterMap with flatMap.
   rw [filterMap_flatMap]
   -- Step 4: rewrite each per-grant filterMap via grant_toFacts_filterMap.
@@ -206,7 +209,7 @@ theorem bridge_allowed (P : Policy) (prin : Principal) (rel : Relation) :
   rw [hPointwise]
   -- Step 5: LHS is (filter ... ).flatMap columns. Collapse it.
   show P.allowed prin rel
-        = P.flatMap (fun g =>
+        = P.grants.flatMap (fun g =>
             if g.principal = prin ∧ g.relation = rel then g.columns else [])
   unfold Policy.allowed
   -- Both sides reduce to the Bool-`if` form, since Prop-`if`s in `Policy.allowed`
@@ -215,7 +218,7 @@ theorem bridge_allowed (P : Policy) (prin : Principal) (rel : Relation) :
   -- the corresponding Prop on each branch.
   have h := filter_flatMap_collapse
               (fun g : Grant => decide (g.principal = prin ∧ g.relation = rel))
-              Grant.columns P
+              Grant.columns P.grants
   -- Both `if`s are over a Decidable proposition; one writes it as `decide ... = true`,
   -- the other as the Prop itself. Reconcile with funext and case split.
   have heq :
@@ -251,8 +254,8 @@ namespace BridgeDemo
 
 /-- Case 1: a single matching grant. -/
 def pol1 : Policy :=
-  [{ principal := "CRM", relation := "users_data",
-     columns := ["id", "name"] }]
+  { grants := [{ principal := "CRM", relation := "users_data",
+                 columns := ["id", "name"] }] }
 
 example :
     pol1.allowed "CRM" "users_data"
@@ -269,11 +272,13 @@ example :
     union with preserved insertion order. Also pins the case where
     other principals' grants are present (and correctly skipped on
     the RHS by the `right(prin, rel, _)` filter). -/
-def pol2 : Policy := [
-  { principal := "CRM",     relation := "users_data", columns := ["id", "name"] },
-  { principal := "CardOps", relation := "cards_data", columns := ["card_id"] },
-  { principal := "CRM",     relation := "users_data", columns := ["region", "age"] }
-]
+def pol2 : Policy := {
+  grants := [
+    { principal := "CRM",     relation := "users_data", columns := ["id", "name"] },
+    { principal := "CardOps", relation := "cards_data", columns := ["card_id"] },
+    { principal := "CRM",     relation := "users_data", columns := ["region", "age"] }
+  ]
+}
 
 example :
     pol2.allowed "CRM" "users_data"
@@ -281,7 +286,7 @@ example :
   bridge_allowed _ _ _
 
 /-- Case 4: empty policy — both sides `[]`. Pins the base case. -/
-def polEmpty : Policy := []
+def polEmpty : Policy := { grants := [] }
 
 example :
     polEmpty.allowed "CRM" "users_data"

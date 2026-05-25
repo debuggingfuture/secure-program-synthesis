@@ -81,6 +81,47 @@ impl Catalog {
     }
 }
 
+/// Closed enumeration of aggregate operators. Mirrors Lean's
+/// `inductive AggOp` and the JSON tags in `Main.lean`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AggOp {
+    /// Sum of column values.
+    Sum,
+    /// Count of rows (per group).
+    Count,
+    /// Minimum value.
+    Min,
+    /// Maximum value.
+    Max,
+    /// Arithmetic mean.
+    Avg,
+}
+
+impl AggOp {
+    /// The label prefix for the synthesized output column name
+    /// (`Sum`, `Count`, `Min`, `Max`, `Avg`). Must match
+    /// `Postern.AggOp.label` byte-for-byte.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            AggOp::Sum => "Sum",
+            AggOp::Count => "Count",
+            AggOp::Min => "Min",
+            AggOp::Max => "Max",
+            AggOp::Avg => "Avg",
+        }
+    }
+
+    /// Synthesized output column name for the aggregate's result
+    /// — `<Label>_<col>` (e.g. `Sum_amount`). Must match
+    /// `Postern.AggOp.outputColumn` byte-for-byte.
+    #[must_use]
+    pub fn output_column(self, col: &str) -> Column {
+        format!("{}_{}", self.label(), col)
+    }
+}
+
 /// Plan IR — mirrors the Lean `inductive Plan`. Tag layout matches
 /// the JSON shape emitted by `Main.lean`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -117,6 +158,23 @@ pub enum Plan {
         right: Box<Plan>,
         /// Join key (shared column).
         on: Column,
+    },
+    /// Aggregate — `op(col)` grouped by `group_by`, computed over
+    /// `inner`. The output schema is `group_by ++ [op.output_column(col)]`.
+    /// Soundness is parameterised over the abstract DP boundary
+    /// (`Policy::agg_allowed`) — see Lean theorem
+    /// `rewrite_sound_aggregate`.
+    Aggregate {
+        /// Aggregate operator.
+        agg: AggOp,
+        /// Column the aggregate reads.
+        col: Column,
+        /// Group-by columns (must be policy-allowed under the
+        /// standard column-grant rule).
+        #[serde(rename = "groupBy")]
+        group_by: Vec<Column>,
+        /// Sub-plan whose rows feed the aggregate.
+        inner: Box<Plan>,
     },
 }
 
@@ -155,6 +213,22 @@ impl Plan {
         }
     }
 
+    /// Smart constructor for `Aggregate`.
+    #[must_use]
+    pub fn aggregate(
+        agg: AggOp,
+        col: impl Into<Column>,
+        group_by: impl IntoIterator<Item = impl Into<Column>>,
+        inner: Plan,
+    ) -> Self {
+        Plan::Aggregate {
+            agg,
+            col: col.into(),
+            group_by: group_by.into_iter().map(Into::into).collect(),
+            inner: Box::new(inner),
+        }
+    }
+
     /// `Plan.touched` — the single relation a plan reads from. For
     /// `Join`, by convention this is the left leg's touched relation;
     /// `touched_rels()` reports the multi-relation view used by
@@ -165,6 +239,7 @@ impl Plan {
             Plan::Scan { rel } => rel,
             Plan::Project { sub, .. } | Plan::Filter { sub, .. } => sub.touched(),
             Plan::Join { left, .. } => left.touched(),
+            Plan::Aggregate { inner, .. } => inner.touched(),
         }
     }
 
@@ -181,6 +256,7 @@ impl Plan {
                 out.extend(right.touched_rels());
                 out
             }
+            Plan::Aggregate { inner, .. } => inner.touched_rels(),
         }
     }
 
@@ -188,7 +264,8 @@ impl Plan {
     /// with the listed columns (preserving sub-plan order);
     /// `Filter` is row-only; `Join` concatenates left- then-right
     /// sub-schemas (caller must disambiguate column-name collisions
-    /// upstream).
+    /// upstream); `Aggregate` exposes the group-by columns plus a
+    /// single synthesized result column (`op.output_column(col)`).
     #[must_use]
     pub fn schema(&self, cat: &Catalog) -> Vec<Column> {
         match self {
@@ -204,6 +281,16 @@ impl Plan {
                 out.extend(right.schema(cat));
                 out
             }
+            Plan::Aggregate {
+                agg,
+                col,
+                group_by,
+                ..
+            } => {
+                let mut out = group_by.clone();
+                out.push(agg.output_column(col));
+                out
+            }
         }
     }
 
@@ -211,9 +298,11 @@ impl Plan {
     /// the plan, distinct from the output schema. Closes the
     /// side-channel where a forbidden column could be a row
     /// predicate without ever appearing in the output. For `Join`,
-    /// concatenates both legs' filter columns. The join key itself
-    /// is *not* a Filter read in this sense — the join-key leak is
-    /// its own coverage condition (`Lean rewrite_refuses_unallowed_join_key`).
+    /// concatenates both legs' filter columns. `Aggregate` recurses
+    /// into its `inner` sub-plan; aggregates themselves are not
+    /// row-selection. The join key itself is *not* a Filter read in
+    /// this sense — the join-key leak is its own coverage condition
+    /// (`Lean rewrite_refuses_unallowed_join_key`).
     #[must_use]
     pub fn filter_cols(&self) -> Vec<Column> {
         let mut out = Vec::new();
@@ -232,6 +321,59 @@ impl Plan {
             Plan::Join { left, right, .. } => {
                 left.collect_filter_cols(acc);
                 right.collect_filter_cols(acc);
+            }
+            Plan::Aggregate { inner, .. } => inner.collect_filter_cols(acc),
+        }
+    }
+
+    /// `Plan.aggregates` — every `(op, col)` pair appearing in an
+    /// `Aggregate` node in the plan. Drives the DP-boundary check
+    /// in `rewrite`.
+    #[must_use]
+    pub fn aggregates(&self) -> Vec<(AggOp, Column)> {
+        let mut out = Vec::new();
+        self.collect_aggregates(&mut out);
+        out
+    }
+
+    fn collect_aggregates(&self, acc: &mut Vec<(AggOp, Column)>) {
+        match self {
+            Plan::Scan { .. } => {}
+            Plan::Project { sub, .. } | Plan::Filter { sub, .. } => sub.collect_aggregates(acc),
+            Plan::Join { left, right, .. } => {
+                left.collect_aggregates(acc);
+                right.collect_aggregates(acc);
+            }
+            Plan::Aggregate {
+                agg, col, inner, ..
+            } => {
+                acc.push((*agg, col.clone()));
+                inner.collect_aggregates(acc);
+            }
+        }
+    }
+
+    /// `Plan.groupByCols` — every column appearing as a `group_by`
+    /// key in an `Aggregate` node. Standard column-grant rule
+    /// (not the DP boundary) gates these.
+    #[must_use]
+    pub fn group_by_cols(&self) -> Vec<Column> {
+        let mut out = Vec::new();
+        self.collect_group_by_cols(&mut out);
+        out
+    }
+
+    fn collect_group_by_cols(&self, acc: &mut Vec<Column>) {
+        match self {
+            Plan::Scan { .. } => {}
+            Plan::Project { sub, .. } | Plan::Filter { sub, .. } => sub.collect_group_by_cols(acc),
+            Plan::Join { left, right, .. } => {
+                left.collect_group_by_cols(acc);
+                right.collect_group_by_cols(acc);
+            }
+            Plan::Aggregate { group_by, inner, .. } => {
+                acc.extend(group_by.iter().cloned());
+                inner.collect_group_by_cols(acc);
             }
         }
     }
@@ -265,28 +407,136 @@ impl Grant {
     }
 }
 
-/// Policy — ordered list of `Grant`s. Monotone grant-only (no deny
-/// lists); deny-lists are paper §6 / future work.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct Policy(Vec<Grant>);
+/// *Aggregate-only* capability — "principal may compute `op(col)`
+/// over `rel`" without read access to the underlying column. The
+/// DP boundary (paper §6) is **abstract** here: a concrete
+/// mechanism (ε-budget, k-anonymity, Laplace noise) refines the
+/// `agg_allowed` predicate at policy-evaluation time; the
+/// rewriter and the Lean soundness theorem are stated against
+/// this predicate, not against any specific mechanism.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct AggGrant {
+    /// Principal the grant applies to.
+    pub principal: Principal,
+    /// Relation the grant applies to.
+    pub relation: Relation,
+    /// Aggregate operator.
+    pub op: AggOp,
+    /// Column the aggregate may read.
+    pub column: Column,
+}
+
+impl AggGrant {
+    /// Smart constructor.
+    pub fn new(
+        principal: impl Into<Principal>,
+        relation: impl Into<Relation>,
+        op: AggOp,
+        column: impl Into<Column>,
+    ) -> Self {
+        Self {
+            principal: principal.into(),
+            relation: relation.into(),
+            op,
+            column: column.into(),
+        }
+    }
+}
+
+/// Policy — column grants plus aggregate-only grants. Monotone
+/// grant-only (no deny lists); deny-lists are paper §6 / future
+/// work. The aggregate-only branch parameterises the DP boundary
+/// (see `AggGrant` doc).
+///
+/// Deserialization accepts **two shapes** for backward compatibility:
+///   1. The new struct form `{"grants": [...], "aggGrants": [...]}`
+///      (emitted by Lean's `postern-corpus`).
+///   2. The legacy array form `[grant, grant, ...]` (used by older
+///      JS callers and pre-C3 demos) — interpreted as `grants` with
+///      empty `aggGrants`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize)]
+pub struct Policy {
+    /// Ordinary column grants.
+    pub grants: Vec<Grant>,
+    /// Aggregate-only grants — the abstract DP boundary surface.
+    #[serde(rename = "aggGrants")]
+    pub agg_grants: Vec<AggGrant>,
+}
+
+impl<'de> Deserialize<'de> for Policy {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        struct PolicyStruct {
+            #[serde(default)]
+            grants: Vec<Grant>,
+            #[serde(default, rename = "aggGrants")]
+            agg_grants: Vec<AggGrant>,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum PolicyRepr {
+            // New canonical shape — must come first so it wins when
+            // both forms are syntactically valid (empty object {}).
+            Struct(PolicyStruct),
+            // Legacy: bare array of grants.
+            Legacy(Vec<Grant>),
+        }
+
+        let raw = PolicyRepr::deserialize(deserializer)?;
+        Ok(match raw {
+            PolicyRepr::Struct(s) => Policy {
+                grants: s.grants,
+                agg_grants: s.agg_grants,
+            },
+            PolicyRepr::Legacy(grants) => Policy {
+                grants,
+                agg_grants: Vec::new(),
+            },
+        })
+    }
+}
 
 impl Policy {
     /// Construct an empty policy.
     #[must_use]
     pub fn new() -> Self {
-        Self(Vec::new())
+        Self::default()
     }
 
-    /// Construct from an iterator of grants.
+    /// Construct from column grants alone (no aggregate-only
+    /// capability). Convenience for the pre-aggregation regime.
     pub fn from_grants(grants: impl IntoIterator<Item = Grant>) -> Self {
-        Self(grants.into_iter().collect())
+        Self {
+            grants: grants.into_iter().collect(),
+            agg_grants: Vec::new(),
+        }
     }
 
-    /// View the underlying grants.
+    /// Construct from both grant kinds.
+    pub fn from_parts(
+        grants: impl IntoIterator<Item = Grant>,
+        agg_grants: impl IntoIterator<Item = AggGrant>,
+    ) -> Self {
+        Self {
+            grants: grants.into_iter().collect(),
+            agg_grants: agg_grants.into_iter().collect(),
+        }
+    }
+
+    /// View the underlying column grants.
     #[must_use]
     pub fn grants(&self) -> &[Grant] {
-        &self.0
+        &self.grants
+    }
+
+    /// View the underlying aggregate-only grants.
+    #[must_use]
+    pub fn agg_grants(&self) -> &[AggGrant] {
+        &self.agg_grants
     }
 
     /// `Policy.allowed` — flat union of column lists across grants
@@ -295,11 +545,47 @@ impl Policy {
     /// reference.
     #[must_use]
     pub fn allowed(&self, prin: &str, rel: &str) -> Vec<Column> {
-        self.0
+        self.grants
             .iter()
             .filter(|g| g.principal == prin && g.relation == rel)
             .flat_map(|g| g.columns.iter().cloned())
             .collect()
+    }
+
+    /// `Policy.aggAllowed` — does the policy carry an aggregate-only
+    /// grant for `(prin, rel, op, col)`? The **abstract DP boundary**:
+    /// concrete mechanisms refine this predicate (ε-budget remaining,
+    /// k-anonymity threshold met, Laplace mechanism parameters) at
+    /// the executor, but the rewriter only inspects the grant.
+    #[must_use]
+    pub fn agg_allowed(&self, prin: &str, rel: &str, op: AggOp, col: &str) -> bool {
+        self.agg_grants
+            .iter()
+            .any(|g| g.principal == prin && g.relation == rel && g.op == op && g.column == col)
+    }
+
+    /// `aggAdmissible` — the `op(col)` aggregate over `rel` for
+    /// `prin` is admissible iff either `col` is in the standard
+    /// column-grant set, **or** the policy carries an `AggGrant`
+    /// (the parameterised DP boundary).
+    #[must_use]
+    pub fn agg_admissible(&self, prin: &str, rel: &str, op: AggOp, col: &str) -> bool {
+        self.allowed(prin, rel).iter().any(|c| c == col) || self.agg_allowed(prin, rel, op, col)
+    }
+
+    /// `Policy.allowedOutputs` — `allowed` extended with one
+    /// synthesized name per admissible aggregate in the plan.
+    /// Defines the *output*-side coverage set against which the
+    /// rewriter filters columns.
+    #[must_use]
+    pub fn allowed_outputs(&self, prin: &str, rel: &str, plan: &Plan) -> Vec<Column> {
+        let mut out = self.allowed(prin, rel);
+        for (op, col) in plan.aggregates() {
+            if self.agg_admissible(prin, rel, op, &col) {
+                out.push(op.output_column(&col));
+            }
+        }
+        out
     }
 }
 
@@ -340,8 +626,11 @@ pub fn rewrite(cat: &Catalog, pol: &Policy, prin: &str, plan: &Plan) -> Option<P
 }
 
 /// Single-relation rewriter body — mirrors `Postern.rewriteLeaf` on
-/// the Lean side. Called by `rewrite` for `.scan / .project / .filter`
-/// inputs; the `Join` arm is handled inline.
+/// the Lean side. Called by `rewrite` for `.scan / .project / .filter
+/// / .aggregate` inputs; the `Join` arm is handled inline. Four
+/// nested refusal guards: catalog non-empty; filterCols all
+/// column-allowed; groupByCols all column-allowed; aggregates all
+/// admissible under the abstract DP boundary.
 fn rewrite_leaf(cat: &Catalog, pol: &Policy, prin: &str, plan: &Plan) -> Option<Plan> {
     let touched = plan.touched();
     let cat_cols = cat.columns(touched);
@@ -349,15 +638,31 @@ fn rewrite_leaf(cat: &Catalog, pol: &Policy, prin: &str, plan: &Plan) -> Option<
         return None;
     }
     let allow = pol.allowed(prin, touched);
+    // Filter-predicate guard — close the row-selection side channel.
     for fc in plan.filter_cols() {
         if !allow.contains(&fc) {
             return None;
         }
     }
+    // Group-by guard — group keys appear verbatim in the output and
+    // must be allowed under the standard column-grant rule.
+    for gb in plan.group_by_cols() {
+        if !allow.contains(&gb) {
+            return None;
+        }
+    }
+    // Aggregate guard — DP boundary applies: either the column is
+    // directly allowed, or the policy carries an AggGrant.
+    for (op, col) in plan.aggregates() {
+        if !pol.agg_admissible(prin, touched, op, &col) {
+            return None;
+        }
+    }
+    let allowed_outputs = pol.allowed_outputs(prin, touched, plan);
     let cols = plan
         .schema(cat)
         .into_iter()
-        .filter(|c| allow.contains(c))
+        .filter(|c| allowed_outputs.contains(c))
         .collect();
     Some(Plan::Project {
         sub: Box::new(plan.clone()),
@@ -565,5 +870,101 @@ mod tests {
             rw.schema(&demo_catalog()).is_empty(),
             "crm ≠ CRM, no grants ⇒ empty schema"
         );
+    }
+
+    fn analytics_policy() -> Policy {
+        Policy::from_parts(
+            [Grant::new(
+                "FraudRisk",
+                "transactions_data",
+                ["txn_id", "card_id", "amount", "merchant", "timestamp"],
+            )],
+            [
+                AggGrant::new("Analytics", "transactions_data", AggOp::Sum, "amount"),
+                AggGrant::new("Analytics", "transactions_data", AggOp::Count, "txn_id"),
+            ],
+        )
+    }
+
+    #[test]
+    fn agg_sum_amount_analytics_via_agggrant() {
+        let plan = Plan::aggregate(
+            AggOp::Sum,
+            "amount",
+            Vec::<String>::new(),
+            Plan::scan("transactions_data"),
+        );
+        let rw = rewrite(&demo_catalog(), &analytics_policy(), "Analytics", &plan)
+            .expect("AggGrant lets Analytics compute Sum(amount)");
+        assert_eq!(rw.schema(&demo_catalog()), vec!["Sum_amount"]);
+    }
+
+    #[test]
+    fn agg_avg_amount_analytics_refused() {
+        let plan = Plan::aggregate(
+            AggOp::Avg,
+            "amount",
+            Vec::<String>::new(),
+            Plan::scan("transactions_data"),
+        );
+        let rw = rewrite(&demo_catalog(), &analytics_policy(), "Analytics", &plan);
+        assert!(
+            rw.is_none(),
+            "no AggGrant for Avg(amount) ⇒ DP boundary refuses"
+        );
+    }
+
+    #[test]
+    fn agg_sum_amount_fraudrisk_trivial() {
+        let plan = Plan::aggregate(
+            AggOp::Sum,
+            "amount",
+            Vec::<String>::new(),
+            Plan::scan("transactions_data"),
+        );
+        let rw = rewrite(&demo_catalog(), &analytics_policy(), "FraudRisk", &plan)
+            .expect("FraudRisk has column-grant on amount ⇒ aggregate dominates");
+        assert_eq!(rw.schema(&demo_catalog()), vec!["Sum_amount"]);
+    }
+
+    #[test]
+    fn agg_group_by_forbidden_column_refused() {
+        let plan = Plan::aggregate(
+            AggOp::Sum,
+            "amount",
+            ["merchant"],
+            Plan::scan("transactions_data"),
+        );
+        let rw = rewrite(&demo_catalog(), &analytics_policy(), "Analytics", &plan);
+        assert!(
+            rw.is_none(),
+            "Analytics has no column-grant on merchant ⇒ groupBy refuses"
+        );
+    }
+
+    #[test]
+    fn agg_output_column_label_matches_lean() {
+        assert_eq!(AggOp::Sum.output_column("amount"), "Sum_amount");
+        assert_eq!(AggOp::Count.output_column("txn_id"), "Count_txn_id");
+        assert_eq!(AggOp::Min.output_column("x"), "Min_x");
+        assert_eq!(AggOp::Max.output_column("x"), "Max_x");
+        assert_eq!(AggOp::Avg.output_column("x"), "Avg_x");
+    }
+
+    #[test]
+    fn policy_deserialize_legacy_array() {
+        // Pre-aggregation JS callers send the legacy array shape.
+        let json = r#"[{"principal":"CRM","relation":"users_data","columns":["id"]}]"#;
+        let pol: Policy = serde_json::from_str(json).unwrap();
+        assert_eq!(pol.grants().len(), 1);
+        assert!(pol.agg_grants().is_empty());
+    }
+
+    #[test]
+    fn policy_deserialize_struct_shape() {
+        let json = r#"{"grants":[{"principal":"CRM","relation":"users_data","columns":["id"]}],"aggGrants":[{"principal":"Analytics","relation":"transactions_data","op":"sum","column":"amount"}]}"#;
+        let pol: Policy = serde_json::from_str(json).unwrap();
+        assert_eq!(pol.grants().len(), 1);
+        assert_eq!(pol.agg_grants().len(), 1);
     }
 }
