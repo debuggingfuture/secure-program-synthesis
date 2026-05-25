@@ -4,7 +4,7 @@ import Base from "../layouts/Base.astro";
 
 <Base
   title="Postern — 8-slide overview"
-  description="Seven slides summarising the Postern research artifact: problem, architecture, Lean proofs, Rust mirror, capability-bounded data flow, open problems."
+  description="Eight slides summarising the Postern research artifact: problem, architecture, sample policy, Lean proofs (13 rewriter theorems + Datalog evaluator), Rust mirror, capability-bounded data flow, open problems."
   bare={true}
 >
   <link
@@ -35,9 +35,11 @@ import Base from "../layouts/Base.astro";
           Cedar) bounds <em>what data</em> reaches the agent, and a
           <em>capability-bounded data flow</em> layer (inspired by Odersky
           et&nbsp;al.) bounds <em>what the agent's code may do</em> with
-          released values. Biscuit attenuation, audience, expiry, key
-          rotation, cross-relation joins, and DP aggregation are explicit
-          open problems (&sect;6).
+          released values. 13 rewriter theorems are mechanised: cross-relation
+          joins and abstract-DP aggregation now ship as scaffolds (Theorems
+          11&ndash;12) with three Join-arm residuals; biscuit attenuation,
+          audience, expiry, key rotation, and a concrete DP-mechanism
+          instantiation remain explicit open problems (&sect;6).
         </p>
       </section>
 
@@ -100,9 +102,12 @@ flowchart LR
           data</em> reaches the agent; <strong>Layer&nbsp;2</strong>
           (capability-bounded sink) constrains <em>what the agent's
           code may do</em> with released values. Rust mirror is
-          hand-written and pinned to the Lean reference by the
-          <code>postern-diff</code> conformance harness (18/18 cases);
-          property-based differential testing is an open problem
+          hand-written and pinned to the Lean reference by two
+          conformance harnesses: <code>postern-diff</code> (31/31
+          rewriter cases, Lean reference&nbsp;&harr;&nbsp;Rust impl) and
+          <code>postern-datalog-diff</code> (9/9 Datalog cases, Lean
+          <code>Program.allowed</code>&nbsp;&harr;&nbsp;<code>biscuit_auth::datalog::World</code>).
+          Property-based differential testing is an open problem
           (&sect;6).
         </p>
       </section>
@@ -168,39 +173,57 @@ right("FraudRisk", "users_data", "region");`}</code></pre>
           </thead>
           <tbody>
             <tr>
-              <td><code>rewrite_sound</code></td>
+              <td>T1&ndash;9 rewriter core (<code>rewrite_sound</code>, <code>rewrite_filter_sound</code>, &hellip;)</td>
               <td><code>Postern.lean</code></td>
               <td><span class="badge ok">proved</span></td>
             </tr>
             <tr>
-              <td><code>rewrite_filter_sound</code></td>
+              <td>T10 <code>bridge_allowed</code> &mdash; column-grant&nbsp;&equiv;&nbsp;Datalog</td>
+              <td><code>Bridge.lean</code></td>
+              <td><span class="badge ok">proved</span></td>
+            </tr>
+            <tr>
+              <td>T11 <code>rewrite_sound_join</code> + join-key leak</td>
               <td><code>Postern.lean</code></td>
               <td><span class="badge ok">proved</span></td>
             </tr>
             <tr>
-              <td><code>eval_monotone</code></td>
-              <td><code>Datalog.lean</code></td>
-              <td><span class="badge partial">proof reduces to one sorry</span></td>
+              <td>T12 <code>rewrite_sound_aggregate</code> (abstract DP boundary)</td>
+              <td><code>Postern.lean</code></td>
+              <td><span class="badge ok">proved</span></td>
             </tr>
             <tr>
-              <td><code>eval_sound</code></td>
-              <td><code>Datalog.lean</code></td>
-              <td><span class="badge todo">stated, sorry</span></td>
+              <td>T13 <code>rewrite_filter_coverage</code> &mdash; predicate-level coverage</td>
+              <td><code>Postern.lean</code></td>
+              <td><span class="badge ok">proved</span></td>
             </tr>
             <tr>
-              <td><code>eval_terminates</code></td>
+              <td>T5, T6, T9 on <code>Join</code> arm (idempotent / monotone / forbidden-filter)</td>
+              <td><code>Postern.lean</code></td>
+              <td><span class="badge partial">3 sorryAx residuals</span></td>
+            </tr>
+            <tr>
+              <td><code>eval_monotone</code>, <code>herbrandBound_mono</code></td>
+              <td><code>Datalog.lean</code></td>
+              <td><span class="badge ok">proved</span></td>
+            </tr>
+            <tr>
+              <td><code>eval_sound</code>, <code>eval_terminates</code></td>
               <td><code>Datalog.lean</code></td>
               <td><span class="badge todo">stated, sorry</span></td>
             </tr>
           </tbody>
         </table>
         <p class="small">
-          Axioms of proven theorems:
-          <code>{`{ propext, Quot.sound }`}</code>.
-          <code>eval_monotone</code>'s body is written but reduces
-          to <code>herbrandBound_mono</code> — a labelled
-          <code>sorry</code> we expose rather than hide. Eight
-          supporting iterator lemmas are proven.
+          Axioms of proven theorems are bounded by
+          <code>{`{ propext, Quot.sound }`}</code> &mdash; Lean&nbsp;4's
+          foundational set; no <code>Classical.choice</code>, no
+          user-supplied axioms. Five residuals isolated as <code>sorryAx</code>
+          in <code>CheckAxioms.lean</code>: three on the <code>Join</code>
+          arm of Theorems&nbsp;5, 6, 9; two Datalog headlines (<code>eval_sound</code>,
+          <code>eval_terminates</code>). Eight Datalog support lemmas and
+          the combinatorial helpers underpinning <code>herbrandBound_mono</code>
+          all proved from <code>Init</code> stdlib, no Mathlib.
         </p>
       </section>
 
@@ -216,12 +239,20 @@ right("FraudRisk", "users_data", "region");`}</code></pre>
         <ul>
           <li><code>postern-core</code> — Plan IR, policy, <code>rewrite()</code>.</li>
           <li><code>postern-guardrail</code> — paper &sect;4's <em>capability-bounded data flow</em>: branded <code>Cap&lt;'sc, C&gt;</code>, invariant <code>'sc</code>, opaque-receipt sinks (three <code>compile_fail</code> doctests pin the lexical escape attempts).</li>
-          <li><code>postern-diff</code> — reference-conformance harness, asserts Rust output is byte-equal to the Lean reference on a hand-curated JSON corpus (18/18 cases: 15 accept, 3 refuse).</li>
-          <li><code>postern-wasm</code> — surface this site loads.</li>
+          <li><code>postern-diff</code> — rewriter conformance harness, asserts Rust output is byte-equal to the Lean reference on a hand-curated JSON corpus (31/31 cases across Project, Filter(<code>Pred</code>), Join, Aggregate).</li>
+          <li><code>postern-datalog-diff</code> — Datalog conformance harness, asserts Lean <code>Program.allowed</code> mem-set-equals <code>biscuit_auth::datalog::World</code> on a second corpus (9/9 cases, ground facts + Horn rules).</li>
+          <li><code>postern-wasm</code> — small WASM bundle this site loads.</li>
         </ul>
         <p class="small">
-          The WASM module powering the <a href="/demo">demo</a> is today the
-          column-grant DSL evaluator; Biscuit-Datalog migration in progress.
+          The gateway's native build evaluates policies through
+          <code>biscuit_auth::datalog::World</code> directly
+          (<code>postern-core::datalog</code>, behind the
+          <code>datalog-biscuit</code> Cargo feature). The browser-side WASM
+          bundle powering the <a href="/demo">demo</a> still ships the
+          column-grant DSL evaluator only &mdash; pulling
+          <code>biscuit-auth</code> through <code>wasm-bindgen</code> would
+          bloat the bundle, so the WASM-only migration stays on the &sect;6
+          list.
         </p>
       </section>
 
@@ -282,11 +313,12 @@ where S: FnOnce(T) -> String;   // T never escapes the sink`}</code></pre>
       <section id="open-problems">
         <h2>Open problems</h2>
         <ul>
-          <li>Block <strong>attenuation</strong> — biscuit blocks can shrink rights mid-flight; the rewriter doesn't yet model this.</li>
-          <li><strong>Audience checks</strong> + <strong>expiry</strong> — bind tokens to gateway identity and a time window.</li>
-          <li><strong>Key rotation</strong> for the verifier without invalidating in-flight tokens.</li>
-          <li><strong>Cross-relation joins</strong> — the current IR is single-relation; multi-relation grants compose non-trivially.</li>
-          <li><strong>Aggregation with a DP boundary</strong> — summary outputs without leaking row-level columns.</li>
+          <li><strong>Filter value-channel</strong> — the syntactic coverage condition (T13) blocks reads of forbidden columns; it does not yet model exfiltration via mutual information between allowed and forbidden values (channel-capacity / per-principal budget calculus, citing SEAL and faceted-IF).</li>
+          <li><strong>Join-arm residuals</strong> — three <code>sorryAx</code> on T5, T6, T9 over the <code>Join</code> arm: per-leg idempotence composition; widening through a two-leg key check; cross-leg forbidden-filter refusal.</li>
+          <li><strong>DP-mechanism instantiation</strong> — T12 ships an abstract <code>aggAllowed</code> predicate; closing it under a specific mechanism (&epsilon;-budget, Laplace, Gaussian, k-anonymity) is the next step.</li>
+          <li><strong>Datalog headlines</strong> — <code>eval_sound</code> and <code>eval_terminates</code> remain stated with <code>sorryAx</code>; both reduce to a body-grounding lemma and a finite-Herbrand pigeonhole.</li>
+          <li>Biscuit block <strong>attenuation</strong>, <strong>audience</strong>, <strong>expiry</strong>, <strong>key rotation</strong> — verified outside the proof today; lifting them into Lean removes the principal-extraction row from the trusted base.</li>
+          <li>WASM-side biscuit-Datalog backend (bundle-size tradeoff); property-based differential testing against the two conformance corpora.</li>
         </ul>
         <p class="muted small">Paper &sect;6 enumerates the full open-problem list.</p>
         <p class="ribbon">
