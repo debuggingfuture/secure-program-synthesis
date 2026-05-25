@@ -24,43 +24,51 @@ task-scoped identity at query time.
 
 **Solution.** Postern mediates every read at the plan boundary
 against a column-grant policy. Its core — Plan IR, policy DSL,
-rewriter — is **mechanized in Lean 4**, with eleven theorems
+rewriter — is **mechanized in Lean 4**, with thirteen theorems
 certifying that every accepted plan's output schema *and*
-filter-predicate read-set *and* (for cross-relation joins) the
-join-key are contained in the policy-allowed columns. A Rust
-implementation mirrors the algorithm and is conformance-tested
-against the Lean reference (21 / 21 cases).
+filter-predicate free-column set (including compound predicate
+terms, pointwise at the φ level) *and* (for cross-relation joins)
+the join-key *and* (for aggregations) the abstract DP boundary are
+contained in the policy-allowed columns. A Rust implementation
+mirrors the algorithm and is conformance-tested against the Lean
+reference (31 / 31 cases).
 
 ## What's in the box
 
 | Path                  | What                                                                                  |
 | --------------------- | ------------------------------------------------------------------------------------- |
 | `paper/`              | Pandoc-Markdown paper + BibTeX. Build with `paper/build.sh` (needs pandoc + xelatex). |
-| `verifier/lean/`      | Lean 4 spec, **eleven** theorems (eight fully proved; three with `sorryAx` on the `Join` arm only), axiom audit, corpus emitter. |
+| `verifier/lean/`      | Lean 4 spec, **thirteen** theorems (ten fully proved; three with `sorryAx` on the `Join` arm only), axiom audit, corpus emitter. |
 | `prototype/`          | Rust workspace mirroring the Lean types (`postern-core`) and the conformance harness (`postern-diff`). |
 | `scenarios/financial-institution/` | Kaggle transactions-fraud-datasets case study, three departments.        |
 | `scripts/reproduce.sh` | One-shot reproduction.                                                               |
 
 ## Acceptance criteria, met
 
-1. **Lean 4 theorems.** Eleven theorems span output-column
+1. **Lean 4 theorems.** Thirteen theorems span output-column
    soundness (generalised over `touchedRels` to cover the
    cross-relation join arm), **filter-predicate soundness**
-   (closes the `WHERE ssn = ?` side-channel), schema subset,
-   monotonicity in policy, idempotence, explicit-refusal lemmas
-   for unknown relations and forbidden filter columns, the
-   headline `rewrite_sound_join`, and the join-key-leak
-   coverage condition `rewrite_refuses_unallowed_join_key`.
-   Eight are fully `sorry`-free; three (`rewrite_idempotent`,
-   `rewrite_monotone`, `rewrite_refuses_forbidden_filter`)
-   carry a `sorryAx` on the `Join` arm only — non-Join cases
-   are fully proved. `CheckAxioms.lean` reports the per-theorem
-   axiom set.
+   (closes the `WHERE ssn = ?` side-channel, with a pointwise
+   φ-level restatement `rewrite_filter_coverage` that rejects
+   compound predicates `f(x_1, …, x_n)` if *any* `x_i` is
+   forbidden), schema subset, monotonicity in policy,
+   idempotence, explicit-refusal lemmas for unknown relations
+   and forbidden filter columns, the headline
+   `rewrite_sound_join`, the join-key-leak coverage condition
+   `rewrite_refuses_unallowed_join_key`, and the
+   abstract-DP-boundary soundness for aggregation
+   (`rewrite_sound_aggregate`, `rewrite_groupBy_sound`,
+   `rewrite_refuses_forbidden_aggregate`). Ten are fully
+   `sorry`-free; three (`rewrite_idempotent`, `rewrite_monotone`,
+   `rewrite_refuses_forbidden_filter`) carry a `sorryAx` on the
+   `Join` arm only — non-Join cases are fully proved.
+   `CheckAxioms.lean` reports the per-theorem axiom set.
 
 2. **Conformance testing.** `postern-diff` runs the Rust rewriter
-   against the Lean-emitted reference corpus; **21 / 21 cases pass**
-   on the demo scenario (16 accept, 5 refuse — including three
-   join cases exercising the cross-relation arm).
+   against the Lean-emitted reference corpus; **31 / 31 cases
+   pass** on the demo scenario (19 accept, 12 refuse — including
+   three join cases, five aggregation/DP-boundary cases, and five
+   predicate-IR cases exercising the φ-level coverage condition).
 
 ## Reproduce
 
@@ -71,7 +79,7 @@ scripts/reproduce.sh
 Expected tail:
 
 ```
-21/21 cases pass (Lean reference == Rust impl)
+31/31 cases pass (Lean reference == Rust impl)
 ==> All green.
 ```
 
@@ -89,11 +97,14 @@ M-series Mac on a warm cache.
   "principal $p$ may read columns $C$ on relation $r$".
   Fail-closed, monotone grant-only (no deny-lists by design;
   see paper §6).
-- **Plan IR** is `Scan(rel) | Project(plan, cols) | Filter(plan, col)`
-  — single-relation by design so soundness stays small.
-- **Rewriter** returns `Option Plan`. Refuses on unknown relation
-  or forbidden filter column; on accept wraps the plan in a
-  `Project` of `schema(q) ∩ allowed(P, prin, touched(q))`.
+- **Plan IR** is `Scan(rel) | Project(plan, cols) | Filter(plan, φ)
+  | Join(left, right, on) | Aggregate(op, col, groupBy, inner)`,
+  where `φ : Pred = Ref(c) | Lit(v) | App(op, [φ_i])` is a
+  predicate term whose free-column set the rewriter inspects.
+- **Rewriter** returns `Option Plan`. Refuses on unknown relation,
+  forbidden free-column in a filter predicate, forbidden group-by
+  key, inadmissible aggregate, or join-key leak; on accept wraps
+  the plan in a `Project` of `schema(q) ∩ allowedOutputs(P, prin, touched(q), q)`.
 - **Capability distribution** is via biscuit tokens (prototype-side,
   outside the proof).
 - **Surface** in the prototype is an MCP server over Polars / DuckDB.

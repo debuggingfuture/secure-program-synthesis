@@ -12,8 +12,8 @@ import Bridge
   Expected output (Lean 4.29.1, no Mathlib):
 
     rewriter (Postern.lean):
-      'rewrite_touched'                       depends on [propext]
-      'rewrite_schema_subset'                 depends on [propext]
+      'rewrite_touched'                       depends on [propext, Quot.sound]
+      'rewrite_schema_subset'                 depends on [propext, Quot.sound]
       'rewrite_sound'                         depends on [propext, Quot.sound]
                                               -- generalised statement using
                                                  `Plan.touchedRels` + `Policy.allowedOutputsRels`;
@@ -22,20 +22,20 @@ import Bridge
                                                  standard column-grant form when no
                                                  aggregates are present.
       'rewrite_filter_sound'                  depends on [propext, Quot.sound]
-      'rewrite_no_new_columns'                depends on [propext]
-      'rewrite_idempotent'                    depends on [propext, sorryAx]
+      'rewrite_no_new_columns'                depends on [propext, Quot.sound]
+      'rewrite_idempotent'                    depends on [propext, sorryAx, Quot.sound]
                                               -- non-`Join` arm fully proved
                                                  (including the new `Aggregate`
                                                   constructor); `Join` per-leg
                                                  composition open.
-      'rewrite_monotone'                      depends on [propext, sorryAx]
+      'rewrite_monotone'                      depends on [propext, sorryAx, Quot.sound]
                                               -- non-`Join` arm fully proved
                                                  (including `Aggregate`); `Join`
                                                  widening composition open.
                                               -- hypothesis upgraded to range over
                                                  `Policy.allowedOutputs` so it covers
                                                  both column grants and AggGrants.
-      'rewrite_refuses_unknown'               depends on [propext]
+      'rewrite_refuses_unknown'               depends on [propext, Quot.sound]
       'rewrite_refuses_forbidden_filter'      depends on [propext, sorryAx, Quot.sound]
                                               -- non-`Join` arm fully proved;
                                                  `Join` cross-leg forbidden-filter open.
@@ -43,9 +43,23 @@ import Bridge
                                               -- corollary of `rewrite_sound`
                                                  restricted to `Join` inputs, now
                                                  phrased over `allowedOutputsRels`.
-      'rewrite_refuses_unallowed_join_key'    does not depend on any axioms
+      'rewrite_refuses_unallowed_join_key'    depends on [propext, Quot.sound]
                                               -- pure case-analysis on the `Join`
                                                  rewriter's key-membership branch.
+                                              -- (Was axiom-free pre-C2; the
+                                                 `Pred.freeCols` `attach` recursion
+                                                 introduces `Quot.sound` into every
+                                                 theorem that unfolds the rewriter.)
+      'rewrite_filter_coverage'               depends on [propext, Quot.sound]
+                                              -- Theorem 13 — predicate-level
+                                                 pointwise restatement of
+                                                 `rewrite_filter_sound`. For every
+                                                 accepted plan and every Filter
+                                                 predicate φ in the rewrite,
+                                                 `free(φ) ⊆ allowedRels prin touchedRels`.
+                                                 Closes the compound-predicate side
+                                                 channel: one forbidden ref taints
+                                                 the whole predicate.
 
     aggregation (Postern.lean — paper §4 Theorem 12 / §6 C3):
       'rewrite_sound_aggregate'               depends on [propext, Quot.sound]
@@ -156,6 +170,9 @@ import Bridge
 #print axioms Postern.rewrite_sound_aggregate
 #print axioms Postern.rewrite_groupBy_sound
 #print axioms Postern.rewrite_refuses_forbidden_aggregate
+-- Predicate-IR coverage (Filter now carries a `Pred` term; paper §4 Theorem 13, §6 C2).
+-- Pointwise φ-level restatement of `rewrite_filter_sound`; `sorry`-free.
+#print axioms Postern.rewrite_filter_coverage
 
 -- Datalog evaluator — Datalog.lean
 #print axioms Postern.Datalog.step_extensive

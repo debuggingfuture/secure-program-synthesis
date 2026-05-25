@@ -9,6 +9,9 @@
 //!
 //!   `rewrite_sound`         — output columns ⊆ policy-allowed
 //!   `rewrite_filter_sound`  — predicate columns ⊆ policy-allowed
+//!   `rewrite_filter_coverage` — every free col of every Filter
+//!                               predicate ⊆ policy-allowed
+//!                               (Theorem 13, pointwise φ-level)
 //!   `rewrite_refuses_unknown` — unknown relation ⇒ `None`
 //!   `rewrite_refuses_forbidden_filter` — forbidden filter ⇒ `None`
 //!
@@ -81,6 +84,94 @@ impl Catalog {
     }
 }
 
+/// Literal value inside a predicate term. The rewriter never
+/// inspects literal values — only `Pred::free_cols` does — so
+/// `String` is enough to faithfully mirror the Lean reference
+/// (`abbrev Value := String`). The executor is responsible for
+/// re-typing / re-coercing literals as needed.
+pub type Value = String;
+
+/// Operator label inside `Pred::App`. The rewriter is operator-
+/// agnostic; only `Ref` contributes to `free_cols`.
+pub type Op = String;
+
+/// Predicate term — abstract syntax of a `Filter`'s WHERE clause.
+/// Mirrors the Lean `inductive Pred` one-for-one. Three
+/// constructors:
+///
+///   * `Ref { col }` — column reference; the only thing that
+///     contributes to `free_cols`.
+///   * `Lit { val }` — constant; opaque to the rewriter.
+///   * `App { op, args }` — operator with predicate-term children.
+///     The rewriter walks the tree; only `Ref` leaves matter.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum Pred {
+    /// Column reference.
+    Ref {
+        /// The column name.
+        col: Column,
+    },
+    /// Literal value.
+    Lit {
+        /// The literal payload (opaque to the rewriter).
+        val: Value,
+    },
+    /// Operator application.
+    App {
+        /// Operator label (e.g. `"="`, `"and"`).
+        op: Op,
+        /// Predicate-term arguments.
+        args: Vec<Pred>,
+    },
+}
+
+impl Pred {
+    /// Smart constructor for `Ref`.
+    #[must_use]
+    pub fn r(col: impl Into<Column>) -> Self {
+        Pred::Ref { col: col.into() }
+    }
+
+    /// Smart constructor for `Lit`.
+    #[must_use]
+    pub fn lit(val: impl Into<Value>) -> Self {
+        Pred::Lit { val: val.into() }
+    }
+
+    /// Smart constructor for `App`.
+    #[must_use]
+    pub fn app(op: impl Into<Op>, args: impl IntoIterator<Item = Pred>) -> Self {
+        Pred::App {
+            op: op.into(),
+            args: args.into_iter().collect(),
+        }
+    }
+
+    /// `Pred.freeCols` — list every `Ref` reachable in the term,
+    /// preserving order and duplicates so the encoding matches the
+    /// Lean reference. The rewriter's coverage condition is
+    /// `pred.free_cols() ⊆ policy.allowed(prin, touched(q))`.
+    #[must_use]
+    pub fn free_cols(&self) -> Vec<Column> {
+        let mut out = Vec::new();
+        self.collect_free_cols(&mut out);
+        out
+    }
+
+    fn collect_free_cols(&self, acc: &mut Vec<Column>) {
+        match self {
+            Pred::Ref { col } => acc.push(col.clone()),
+            Pred::Lit { .. } => {}
+            Pred::App { args, .. } => {
+                for a in args {
+                    a.collect_free_cols(acc);
+                }
+            }
+        }
+    }
+}
+
 /// Closed enumeration of aggregate operators. Mirrors Lean's
 /// `inductive AggOp` and the JSON tags in `Main.lean`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -139,13 +230,16 @@ pub enum Plan {
         /// Columns to keep (intersected with sub-plan's schema).
         cols: Vec<Column>,
     },
-    /// Row-only predicate; schema unchanged. `col` is the read
-    /// dependency that the rewriter checks for policy-coverage.
+    /// Row-only predicate; schema unchanged. `pred` is the
+    /// predicate-term whose free-column set the rewriter checks
+    /// for policy-coverage (Theorem 13). The rewriter is
+    /// operator-agnostic — only `Pred::Ref` leaves contribute to
+    /// the coverage check.
     Filter {
         /// Sub-plan.
         sub: Box<Plan>,
-        /// Column the predicate reads.
-        col: Column,
+        /// Predicate term — see [`Pred`].
+        pred: Pred,
     },
     /// Equi-join of `left` and `right` on a shared column `on`.
     /// Output schema is `left.schema ++ right.schema`; the rewriter
@@ -194,12 +288,25 @@ impl Plan {
         }
     }
 
-    /// Smart constructor for `Filter`.
+    /// Smart constructor for `Filter` with a predicate term.
     #[must_use]
-    pub fn filter(sub: Plan, col: impl Into<Column>) -> Self {
+    pub fn filter(sub: Plan, pred: Pred) -> Self {
         Plan::Filter {
             sub: Box::new(sub),
-            col: col.into(),
+            pred,
+        }
+    }
+
+    /// Convenience smart constructor for the common case
+    /// `Filter(sub, Ref(col))` — keeps test/demo sites concise and
+    /// matches the bare-column ergonomics of the pre-C2 IR for
+    /// migration purposes. Equivalent to
+    /// `Plan::filter(sub, Pred::r(col))`.
+    #[must_use]
+    pub fn filter_col(sub: Plan, col: impl Into<Column>) -> Self {
+        Plan::Filter {
+            sub: Box::new(sub),
+            pred: Pred::r(col),
         }
     }
 
@@ -282,10 +389,7 @@ impl Plan {
                 out
             }
             Plan::Aggregate {
-                agg,
-                col,
-                group_by,
-                ..
+                agg, col, group_by, ..
             } => {
                 let mut out = group_by.clone();
                 out.push(agg.output_column(col));
@@ -314,8 +418,8 @@ impl Plan {
         match self {
             Plan::Scan { .. } => {}
             Plan::Project { sub, .. } => sub.collect_filter_cols(acc),
-            Plan::Filter { sub, col } => {
-                acc.push(col.clone());
+            Plan::Filter { sub, pred } => {
+                pred.collect_free_cols(acc);
                 sub.collect_filter_cols(acc);
             }
             Plan::Join { left, right, .. } => {
@@ -323,6 +427,32 @@ impl Plan {
                 right.collect_filter_cols(acc);
             }
             Plan::Aggregate { inner, .. } => inner.collect_filter_cols(acc),
+        }
+    }
+
+    /// `Plan.preds` — every `Pred` term at any `Filter` node inside
+    /// `self`, outer-to-inner. Mirrors Lean's `Plan.preds` and feeds
+    /// the predicate-level coverage statement (Theorem 13).
+    #[must_use]
+    pub fn preds(&self) -> Vec<Pred> {
+        let mut out = Vec::new();
+        self.collect_preds(&mut out);
+        out
+    }
+
+    fn collect_preds(&self, acc: &mut Vec<Pred>) {
+        match self {
+            Plan::Scan { .. } => {}
+            Plan::Project { sub, .. } => sub.collect_preds(acc),
+            Plan::Filter { sub, pred } => {
+                acc.push(pred.clone());
+                sub.collect_preds(acc);
+            }
+            Plan::Join { left, right, .. } => {
+                left.collect_preds(acc);
+                right.collect_preds(acc);
+            }
+            Plan::Aggregate { inner, .. } => inner.collect_preds(acc),
         }
     }
 
@@ -371,7 +501,9 @@ impl Plan {
                 left.collect_group_by_cols(acc);
                 right.collect_group_by_cols(acc);
             }
-            Plan::Aggregate { group_by, inner, .. } => {
+            Plan::Aggregate {
+                group_by, inner, ..
+            } => {
                 acc.extend(group_by.iter().cloned());
                 inner.collect_group_by_cols(acc);
             }
@@ -711,7 +843,7 @@ mod tests {
             &demo_catalog(),
             &demo_policy(),
             "CRM",
-            &Plan::filter(Plan::scan("users_data"), "region"),
+            &Plan::filter_col(Plan::scan("users_data"), "region"),
         )
         .expect("accept");
         assert_eq!(
@@ -762,7 +894,7 @@ mod tests {
             &demo_catalog(),
             &demo_policy(),
             "CRM",
-            &Plan::filter(Plan::scan("users_data"), "ssn"),
+            &Plan::filter_col(Plan::scan("users_data"), "ssn"),
         );
         assert!(rw.is_none(), "filter on ssn must refuse");
     }
@@ -773,9 +905,83 @@ mod tests {
             &demo_catalog(),
             &demo_policy(),
             "CRM",
-            &Plan::filter(Plan::filter(Plan::scan("users_data"), "region"), "email"),
+            &Plan::filter_col(
+                Plan::filter_col(Plan::scan("users_data"), "region"),
+                "email",
+            ),
         );
         assert!(rw.is_none(), "any forbidden filter col must refuse");
+    }
+
+    #[test]
+    fn pred_compound_allowed_only_accepts() {
+        // `region = "EU"` — refs only the allowed `region` column.
+        let pred = Pred::app("=", [Pred::r("region"), Pred::lit("EU")]);
+        let rw = rewrite(
+            &demo_catalog(),
+            &demo_policy(),
+            "CRM",
+            &Plan::filter(Plan::scan("users_data"), pred),
+        )
+        .expect("compound predicate over allowed col must accept");
+        assert_eq!(
+            rw.schema(&demo_catalog()),
+            vec!["id", "name", "region", "age"]
+        );
+    }
+
+    #[test]
+    fn pred_compound_one_forbidden_refused() {
+        // `region = "EU" AND ssn = "X"` — one forbidden ref taints the whole predicate.
+        let pred = Pred::app(
+            "and",
+            [
+                Pred::app("=", [Pred::r("region"), Pred::lit("EU")]),
+                Pred::app("=", [Pred::r("ssn"), Pred::lit("X")]),
+            ],
+        );
+        let rw = rewrite(
+            &demo_catalog(),
+            &demo_policy(),
+            "CRM",
+            &Plan::filter(Plan::scan("users_data"), pred),
+        );
+        assert!(
+            rw.is_none(),
+            "compound predicate with one forbidden ref must refuse"
+        );
+    }
+
+    #[test]
+    fn pred_negation_allowed_accepts() {
+        // `NOT (age = 18)` — every ref is to an allowed column.
+        let pred = Pred::app("not", [Pred::app("=", [Pred::r("age"), Pred::lit("18")])]);
+        let rw = rewrite(
+            &demo_catalog(),
+            &demo_policy(),
+            "CRM",
+            &Plan::filter(Plan::scan("users_data"), pred),
+        )
+        .expect("negation over allowed col must accept");
+        assert_eq!(
+            rw.schema(&demo_catalog()),
+            vec!["id", "name", "region", "age"]
+        );
+    }
+
+    #[test]
+    fn pred_free_cols_walks_nested_app() {
+        // Sanity check the `Pred::free_cols` traversal independent
+        // of `rewrite` — preserves order, includes duplicates.
+        let pred = Pred::app(
+            "and",
+            [
+                Pred::r("a"),
+                Pred::app("=", [Pred::r("b"), Pred::lit("x")]),
+                Pred::r("a"),
+            ],
+        );
+        assert_eq!(pred.free_cols(), vec!["a", "b", "a"]);
     }
 
     #[test]

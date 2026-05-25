@@ -354,10 +354,15 @@ const demoConfig = {
       tables: Record<string, Row[]>;
     }
 
+    type Pred =
+      | { kind: "ref"; col: string }
+      | { kind: "lit"; val: string }
+      | { kind: "app"; op: string; args: Pred[] };
+
     type Plan =
       | { op: "scan"; rel: string }
       | { op: "project"; sub: Plan; cols: string[] }
-      | { op: "filter"; sub: Plan; col: string };
+      | { op: "filter"; sub: Plan; pred: Pred };
 
     const configEl = document.getElementById("demo-config") as HTMLScriptElement | null;
     if (!configEl) throw new Error("demo-config script tag missing");
@@ -446,7 +451,13 @@ const demoConfig = {
       const filter = String(formData.get("filter") ?? "");
 
       let plan: Plan = { op: "scan", rel };
-      if (filter) plan = { op: "filter", sub: plan, col: filter };
+      if (filter) {
+        // Wrap the bare column reference in a `Pred::Ref` per the
+        // predicate-IR Filter (paper §Plan IR Theorem 13). The demo
+        // form only exposes single-column filters; compound predicates
+        // (`region = "EU" AND ssn = ?`) are exercised by the corpus.
+        plan = { op: "filter", sub: plan, pred: { kind: "ref", col: filter } };
+      }
       if (cols.length > 0) plan = { op: "project", sub: plan, cols };
       return plan;
     }
@@ -459,9 +470,19 @@ const demoConfig = {
       return wasmReady;
     }
 
-    // Render a plan as an approximate SQL string. The Plan IR has no
-    // predicate value attached to Filter (paper §Plan IR), so we
-    // surface filter columns as `WHERE <col> IS NOT NULL` for shape.
+    // Free-column set of a predicate term — every `Ref` reachable.
+    // Mirrors Lean's `Pred.freeCols` so the demo's surface matches the
+    // rewriter's coverage check.
+    function predFreeCols(pred: Pred): string[] {
+      if (pred.kind === "ref") return [pred.col];
+      if (pred.kind === "lit") return [];
+      return pred.args.flatMap(predFreeCols);
+    }
+
+    // Render a plan as an approximate SQL string. The Plan IR carries
+    // a predicate term `Pred` at each Filter node; for the demo we
+    // collapse to `WHERE <col1> IS NOT NULL AND <col2> IS NOT NULL …`
+    // over the predicate's free-column set.
     function planToSql(plan: Plan): string {
       // Walk top-down to collect the projection, filter cols, and base rel.
       let cols: string[] | "*" = "*";
@@ -473,7 +494,7 @@ const demoConfig = {
           if (cols === "*") cols = cur.cols.slice();
           cur = cur.sub;
         } else {
-          filters.push(cur.col);
+          filters.push(...predFreeCols(cur.pred));
           cur = cur.sub;
         }
       }
