@@ -175,29 +175,39 @@ const authorLine = frontmatter.author?.join(", ") ?? "";
     overflow-x: auto;
   }
 
+  /* Architecture-style figures break out of the 72ch text column —
+     a flowchart shrunk to ~640px is unreadable. Center the figure on
+     the viewport and let it grow up to 1100px. */
   .paper__body :global(.paper-figure) {
-    margin: 1.6rem 0;
-    padding: 1rem;
+    position: relative;
+    left: 50%;
+    transform: translateX(-50%);
+    width: min(calc(100vw - 2.4rem), 1100px);
+    margin: 1.8rem 0;
+    padding: 1.2rem;
     background: var(--bg-elevated);
     border: 1px solid var(--border);
     border-radius: 4px;
     text-align: center;
+    box-sizing: border-box;
   }
 
   .paper__body :global(.paper-figure img) {
     display: block;
     width: 100%;
-    max-width: 760px;
     height: auto;
     margin: 0 auto;
   }
 
   .paper__body :global(.paper-figure figcaption) {
-    margin-top: 0.7rem;
-    font-size: 0.88rem;
+    margin-top: 0.8rem;
+    font-size: 0.9rem;
     color: var(--fg-muted);
     text-align: left;
-    line-height: 1.45;
+    line-height: 1.5;
+    max-width: 72ch;
+    margin-left: auto;
+    margin-right: auto;
   }
 
   .paper__body :global(.cite) {
