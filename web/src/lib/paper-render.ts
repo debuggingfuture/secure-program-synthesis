@@ -225,6 +225,10 @@ function escapeHtml(s: string): string {
     .replace(/>/g, "&gt;");
 }
 
+function escapeAttr(s: string): string {
+  return escapeHtml(s).replace(/"/g, "&quot;");
+}
+
 /**
  * Pre-process math: replace `$$...$$` and `$...$` with rendered HTML
  * BEFORE markdown-it sees them. We emit raw HTML directly — earlier
@@ -283,8 +287,23 @@ export async function renderPaper(): Promise<RenderedPaper> {
   //    later text mutation.
   const cited = resolveCitations(body, state);
 
+  // 1b. Rewrite pandoc-flavoured figure references for HTML output.
+  //     Markdown source carries `![cap](figures/foo.pdf){#fig:x width=N%}`
+  //     because tectonic embeds the PDF directly. For the web we
+  //     (a) swap the .pdf path for the SVG mirror under /figures/,
+  //     and (b) wrap the result in <figure>/<figcaption> so the caption
+  //     renders (markdown-it ignores pandoc attr blocks otherwise).
+  const figured = cited.replace(
+    /!\[([^\]]+)\]\(figures\/([^)]+)\.pdf\)(\{[^}]*\})?/g,
+    (_m, caption: string, base: string) =>
+      '<figure class="paper-figure">' +
+      `<img src="/figures/${base}.svg" alt="${escapeAttr(caption)}" />` +
+      `<figcaption>${caption}</figcaption>` +
+      "</figure>",
+  );
+
   // 2. swap math expressions for inline KaTeX HTML.
-  const mathed = renderMathSpans(cited);
+  const mathed = renderMathSpans(figured);
 
   // 3. markdown → HTML.
   const md = setupMarkdown();

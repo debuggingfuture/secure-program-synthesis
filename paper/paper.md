@@ -8,7 +8,7 @@ abstract: |
   agents. An agent's effective rights are context-driven — which
   principal it acts for, which task it is invoked under, which
   scope the caller granted — and the static
-  *identity→role→permission* chain of
+  *identity → role → permission* chain of
   RBAC cannot encode any of those axes. Per-engine row- and
   column-level security does not survive the ETL boundary;
   physical tenant segregation forfeits the cross-source joins
@@ -64,7 +64,7 @@ cross-source joins that motivate the lakehouse in the first
 place. Neither addresses the deeper mismatch: an agent's
 effective permissions depend on the principal it acts for, the
 task it is invoked under, and the calling context — none of
-which the static *identity&nbsp;→&nbsp;role&nbsp;→&nbsp;permission*
+which the static *identity → role → permission*
 chain of RBAC encodes. The same agent code called by two
 principals, or invoked by one principal under two tasks, may
 legitimately need two different views. We propose plan-level

@@ -175,6 +175,31 @@ const authorLine = frontmatter.author?.join(", ") ?? "";
     overflow-x: auto;
   }
 
+  .paper__body :global(.paper-figure) {
+    margin: 1.6rem 0;
+    padding: 1rem;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    text-align: center;
+  }
+
+  .paper__body :global(.paper-figure img) {
+    display: block;
+    width: 100%;
+    max-width: 760px;
+    height: auto;
+    margin: 0 auto;
+  }
+
+  .paper__body :global(.paper-figure figcaption) {
+    margin-top: 0.7rem;
+    font-size: 0.88rem;
+    color: var(--fg-muted);
+    text-align: left;
+    line-height: 1.45;
+  }
+
   .paper__body :global(.cite) {
     font-family: var(--font-sans);
     font-size: 0.66em;
