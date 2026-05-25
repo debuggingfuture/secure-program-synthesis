@@ -166,9 +166,10 @@ mod biscuit_backend {
 
     use super::*;
     use biscuit_auth::datalog::{
-        Fact as BFact, Origin, Predicate as BPred, Rule as BRule, SymbolTable, Term as BTerm,
-        TrustedOrigins, World,
+        Fact as BFact, Origin, Predicate as BPred, RunLimits, Rule as BRule, SymbolTable,
+        Term as BTerm, TrustedOrigins, World,
     };
+    use std::time::Duration;
 
     /// Compile a single `Atom` whose arguments are all `Var` or
     /// `Const` into a biscuit `Predicate`. Variables are interned
@@ -241,8 +242,20 @@ mod biscuit_backend {
             world.add_rule(0, &scope, brule);
         }
 
+        // biscuit's default `max_time` is 1ms — fine for a single
+        // token-verification query but flaky under load (cargo
+        // test in parallel) or for the larger conformance cases
+        // here. Use the same 10s ceiling the token-side
+        // authorizer uses for explicit policy evaluation. Fact
+        // and iteration caps are bumped accordingly; the cases
+        // we exercise here are nowhere near these limits.
+        let limits = RunLimits {
+            max_facts: 100_000,
+            max_iterations: 10_000,
+            max_time: Duration::from_secs(10),
+        };
         world
-            .run(&sym)
+            .run_with_limits(&sym, limits)
             .map_err(|e| DatalogError::Backend(format!("{e:?}")))?;
 
         // Enumerate facts. Want all `right(prin, rel, c)` where the

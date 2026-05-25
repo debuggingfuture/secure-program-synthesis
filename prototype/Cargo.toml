@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/postern-core",
     "crates/postern-diff",
+    "crates/postern-datalog-diff",
     "crates/postern-guardrail",
     "crates/postern-wasm",
 ]
