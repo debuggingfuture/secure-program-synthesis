@@ -2,7 +2,7 @@ flowchart LR
   agent[LLM agent] -->|plan + biscuit token| gw{{Postern gateway}}
   subgraph TCB
     gw -->|signature verify| bc[biscuit-auth]
-    bc -->|principal + token facts| ev[biscuit Datalog eval]
+    bc -->|principal + token facts| ev["biscuit Datalog eval<br/>(planned dispatch)"]
     pol[(policy: right facts/rules)] --> ev
     ev -->|allow-set per principal| rw[Lean-verified plan rewriter]
     cat[(catalog)] --> rw
