@@ -1,9 +1,10 @@
 flowchart LR
-  agent[LLM agent] -->|MCP plan + biscuit| gw{{Postern gateway}}
+  agent[LLM agent] -->|plan + biscuit token| gw{{Postern gateway}}
   subgraph TCB
-    gw -->|verify| bc[biscuit verifier]
-    bc -->|principal| rw[Lean-extracted rewriter]
-    pol[(policy)] --> rw
+    gw -->|signature verify| bc[biscuit-auth]
+    bc -->|principal + token facts| ev["biscuit Datalog eval<br/>(planned dispatch)"]
+    pol[(policy: right facts/rules)] --> ev
+    ev -->|allow-set per principal| rw[Lean-verified plan rewriter]
     cat[(catalog)] --> rw
     rw -->|Option Plan| exe[DuckDB / Polars]
   end

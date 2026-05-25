@@ -22,66 +22,27 @@ import Base from "../layouts/Base.astro";
       <div class="hero__ctas">
         <a class="cta cta--primary" href="/paper">Read the paper</a>
         <a class="cta" href="/paper.pdf">Download PDF</a>
-        <a class="cta" href="/slides">6-slide overview</a>
+        <a class="cta" href="/slides">Open slides ↗</a>
         <a class="cta" href="/demo">Try the rewriter (WASM)</a>
       </div>
     </section>
 
-    <section class="grid">
-      <article class="card">
-        <h2>The shape</h2>
-        <p>
-          Agents reading the lakehouse aren't humans on stable roles — they're
-          short-lived and contextual, and the same agent code may legitimately
-          serve different principals under different tasks. RBAC's static
-          <em>identity → role → permission</em> chain encodes none of that;
-          per-engine RLS doesn't survive ETL; tenant segregation forfeits the
-          cross-source joins. Policy has to live at the query plane, gated
-          under the agent's task-scoped identity at query time.
+    <section class="slides-embed" aria-label="8-slide overview">
+      <div class="slides-embed__head">
+        <h2>8-slide overview</h2>
+        <p class="muted">
+          Use arrow keys / swipe to navigate. The deck is also live at
+          <a href="/slides">/slides</a> for full-screen viewing.
         </p>
-      </article>
-
-      <article class="card">
-        <h2>The rewriter</h2>
-        <p>
-          <code>rewrite : Catalog → Policy → Principal → Plan → Option Plan</code>
-          — projects the output schema to the policy-allowed columns under the
-          querying principal and refuses plans whose filter predicates touch
-          forbidden columns. Mechanised in Lean 4, mirrored in Rust, validated
-          against a JSON corpus.
-        </p>
-      </article>
-
-      <article class="card">
-        <h2>What the proof covers</h2>
-        <ul class="check-list">
-          <li><span class="ok">proved</span> <code>rewrite_sound</code> — output columns ⊆ policy-allowed</li>
-          <li><span class="ok">proved</span> <code>rewrite_filter_sound</code> — predicate columns ⊆ policy-allowed</li>
-          <li><span class="partial">partial</span> <code>eval_monotone</code> — proof reduces to <code>herbrandBound_mono</code> (one labelled sorry)</li>
-          <li><span class="todo">stated</span> <code>eval_sound</code> — every derived atom traces to a fact or rule</li>
-          <li><span class="todo">stated</span> <code>eval_terminates</code> — iterating past the bound is a no-op</li>
-        </ul>
-        <p class="note">
-          The Datalog evaluator
-          (<code>verifier/lean/Datalog.lean</code>) is a work in
-          progress. The plan rewriter
-          (<code>verifier/lean/Postern.lean</code>) is
-          <code>sorry</code>-free with axioms bounded by
-          <code>{`{propext, Quot.sound}`}</code>.
-        </p>
-      </article>
-
-      <article class="card">
-        <h2>How the parts fit</h2>
-        <p>
-          <strong>Lean</strong> defines the reference and proves the soundness
-          claims; <strong>postern-core</strong> mirrors the rewriter in Rust;
-          <strong>postern-diff</strong> diff-tests Rust ↔ Lean output on a
-          JSON corpus (18/18 cases pass);
-          <strong>postern-guardrail</strong> provides invariant-branded
-          capability tokens around the rewriter's outputs.
-        </p>
-      </article>
+      </div>
+      <div class="slides-embed__frame">
+        <iframe
+          src="/slides"
+          title="Postern — 8-slide overview"
+          loading="lazy"
+          allowfullscreen
+        ></iframe>
+      </div>
     </section>
 
     <section class="repo-pointer">
@@ -168,77 +129,65 @@ import Base from "../layouts/Base.astro";
     opacity: 0.92;
   }
 
-  .grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-    gap: 1.2rem;
-    margin: 2.5rem 0;
+  /* Slides break out of the .landing 980px column and span the
+     viewport — at 16:9 the deck reads much better full-bleed. */
+  .slides-embed {
+    position: relative;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 100vw;
+    margin: 2.4rem 0 0;
+    padding: 0 clamp(1rem, 4vw, 3rem);
+    box-sizing: border-box;
   }
 
-  .card {
-    background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 1.2rem 1.3rem;
+  .slides-embed__head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 1rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.6rem;
+    max-width: 1400px;
+    margin-left: auto;
+    margin-right: auto;
   }
 
-  .card h2 {
-    margin-top: 0;
-    font-size: 1rem;
+  .slides-embed__head h2 {
     font-family: var(--font-mono);
-    letter-spacing: -0.01em;
-    color: var(--accent);
-  }
-
-  .check-list {
-    list-style: none;
-    padding: 0;
-    margin: 0.5rem 0 0.8rem;
-    font-size: 0.92rem;
-  }
-
-  .check-list li {
-    padding: 0.18rem 0;
-  }
-
-  .ok,
-  .todo,
-  .partial {
-    display: inline-block;
-    width: 4.6rem;
-    font-family: var(--font-mono);
-    font-size: 0.72rem;
+    font-size: 0.85rem;
     text-transform: uppercase;
-    letter-spacing: 0.05em;
-    padding: 0.05rem 0.4rem;
-    border-radius: 2px;
-    margin-right: 0.4rem;
-    text-align: center;
-  }
-
-  .ok {
-    background: rgba(47, 107, 58, 0.15);
-    color: var(--accept);
-  }
-
-  .partial {
-    background: rgba(177, 92, 46, 0.14);
+    letter-spacing: 0.08em;
     color: var(--accent);
+    margin: 0;
   }
 
-  .todo {
-    background: var(--warning-bg);
-    color: var(--warning-border);
-  }
-
-  .note {
-    color: var(--fg-muted);
+  .slides-embed__head p {
+    margin: 0;
     font-size: 0.86rem;
-    margin: 0.6rem 0 0;
+  }
+
+  .slides-embed__frame {
+    position: relative;
+    aspect-ratio: 16 / 9;
+    max-width: 1400px;
+    margin: 0 auto;
+    border: 1px solid var(--border-strong);
+    border-radius: 4px;
+    overflow: hidden;
+    background: #fff;
+  }
+
+  .slides-embed__frame iframe {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    border: 0;
   }
 
   .repo-pointer {
-    margin-top: 2rem;
+    margin-top: 3rem;
   }
 
   .paths {

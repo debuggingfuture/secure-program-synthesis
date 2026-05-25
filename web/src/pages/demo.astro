@@ -15,12 +15,15 @@ const datalogText = policyAsDatalog(POLICY);
 
 const relations = Object.keys(CATALOG);
 
-// Serialise data the client form needs.
+// Serialise data the client form needs. `tables` carries the sample
+// rows so the result panel can show actual dataframes (what the agent
+// would receive before vs. after the rewrite).
 const demoConfig = {
   catalog: CATALOG,
   policy: POLICY,
   principals: PRINCIPALS,
   sensitive: SENSITIVE,
+  tables: TABLES,
 };
 ---
 
@@ -33,11 +36,97 @@ const demoConfig = {
       <p class="eyebrow">Interactive demo</p>
       <h1>Financial-institution scenario</h1>
       <p class="lede">
-        Three principals (CRM, CardOps, FraudRisk), three tables, one policy.
-        Submit a plan and the WASM-compiled rewriter answers: <em>rewrite</em>
-        with a projected column list, or <em>refuse</em> with a reason.
+        A retail bank's data lakehouse holds three tables —
+        <code>users_data</code>, <code>cards_data</code>,
+        <code>transactions_data</code> — ingested from upstream CRM,
+        card-management, and ledger systems. Three internal
+        departments query the lake through LLM agents. Each
+        department has a different reason to look at the same
+        rows, so the policy gates <em>which columns</em> reach
+        each agent. Submit a plan and the WASM-compiled rewriter
+        answers: <em>rewrite</em> with a projected column list, or
+        <em>refuse</em> with a reason.
       </p>
     </header>
+
+    <section class="block">
+      <h2>Cast — the three principals</h2>
+      <p class="muted">
+        Each principal is a department-scoped agent identity. The
+        Postern gateway extracts the principal from a Biscuit token
+        on every request and looks up the matching grants.
+      </p>
+      <div class="cast">
+        <article class="cast-card">
+          <header>
+            <h3><code>CRM</code></h3>
+            <span class="muted small">Customer Relationship Management</span>
+          </header>
+          <p>
+            Runs marketing segmentation and customer-support
+            lookups. Needs to identify a user by
+            <code>id</code>/<code>name</code> and know their
+            <code>region</code> and <code>age</code> for campaign
+            targeting. Has <strong>no business reason</strong> to
+            see cards, transactions, or PII like
+            <code class="sensitive">ssn</code> /
+            <code class="sensitive">email</code>.
+          </p>
+          <p class="grant-line">
+            <strong>Allowed:</strong>
+            <code>users_data.&#123;id, name, region, age&#125;</code>
+          </p>
+        </article>
+
+        <article class="cast-card">
+          <header>
+            <h3><code>CardOps</code></h3>
+            <span class="muted small">Card Operations</span>
+          </header>
+          <p>
+            Handles card issuance, activation, and limit changes.
+            Needs the card-level attributes
+            (<code>card_id</code>, <code>card_type</code>,
+            <code>limit</code>, <code>activated</code>) but
+            <strong>must never see the full
+            <code class="sensitive">card_number</code></strong>
+            (PAN — PCI-DSS scope) and has no business with users or
+            transactions in this scenario.
+          </p>
+          <p class="grant-line">
+            <strong>Allowed:</strong>
+            <code>cards_data.&#123;card_id, card_type, limit, activated&#125;</code>
+          </p>
+        </article>
+
+        <article class="cast-card">
+          <header>
+            <h3><code>FraudRisk</code></h3>
+            <span class="muted small">Fraud &amp; Risk Analytics</span>
+          </header>
+          <p>
+            Investigates anomalous spend patterns. Needs the full
+            transactions table to compute spend signatures
+            <em>and</em> a minimum-necessary slice of users
+            (just <code>id</code> + <code>region</code>) to bucket
+            by geography. Does not need
+            <code>name</code>/<code>age</code> for the model and
+            never sees PII or PAN.
+          </p>
+          <p class="grant-line">
+            <strong>Allowed:</strong>
+            <code>transactions_data.&#123;txn_id, card_id, amount, merchant, timestamp&#125;</code>
+            +
+            <code>users_data.&#123;id, region&#125;</code>
+          </p>
+        </article>
+      </div>
+      <p class="muted small">
+        Any principal not in this list (e.g. <code>Marketing</code>,
+        a contractor) falls through the fail-closed default — the
+        rewriter returns an empty projection, never the raw rows.
+      </p>
+    </section>
 
     <section class="block">
       <h2>1. Raw data</h2>
@@ -111,6 +200,53 @@ const demoConfig = {
     </section>
 
     <section class="block">
+      <h2>2b. The biscuit on the wire</h2>
+      <p class="muted">
+        On every request, <code>biscuit_auth::datalog::World</code> is
+        loaded with two layers of Datalog before evaluating an
+        <code>allow if right($p, $r, $c)</code> query. Pick a principal
+        below to see the bearer block update.
+      </p>
+      <div class="policy-grid biscuit-grid">
+        <div>
+          <h3 class="policy-title">
+            Authority block
+            <span class="biscuit-source biscuit-source--gw">gateway-loaded</span>
+          </h3>
+          <p class="muted small biscuit-cap">
+            Compiled from <code>policy.postern</code> at gateway startup
+            and re-added via <code>World::add_fact</code> per request.
+            Trusted by construction; not signed by the bearer.
+          </p>
+          <pre class="policy-datalog biscuit-pane biscuit-pane--gw">{datalogText}</pre>
+        </div>
+        <div>
+          <h3 class="policy-title">
+            Bearer token
+            <span class="biscuit-source biscuit-source--bearer" id="biscuit-principal-label">CRM</span>
+          </h3>
+          <p class="muted small biscuit-cap">
+            Ed25519-signed by the issuer (the bank's IAM). Carries only
+            the principal identity — no rights, no scope.
+          </p>
+          <pre class="policy-datalog biscuit-pane biscuit-pane--bearer" id="biscuit-bearer-logical">user(&quot;CRM&quot;).</pre>
+          <h4 class="biscuit-subhead">Serialized (mock)</h4>
+          <pre class="biscuit-wire" id="biscuit-bearer-wire">En0KEwoEQ1JNGAMiCQoHCAoSAxiACBIkCAASIA...</pre>
+        </div>
+      </div>
+      <p class="muted small biscuit-note">
+        <strong>Not modelled in this artifact</strong> (paper §6 open
+        problems): <em>attenuation</em> (3rd-party caveats narrowing
+        the bearer's rights), <em>audience</em> (binding the token to
+        one gateway URL), <em>expiry</em> (<code>check if time($t),
+        $t &lt; 2026-06-01T00:00:00Z</code>), <em>key rotation</em>
+        (root-key rollover without re-issuing every bearer). The
+        serialized blob is a mock — not a valid Ed25519-signed token —
+        because the WASM bundle doesn't ship biscuit-auth today.
+      </p>
+    </section>
+
+    <section class="block">
       <h2>3. Try it</h2>
 
       <form id="rewrite-form" class="form" autocomplete="off">
@@ -143,7 +279,14 @@ const demoConfig = {
         <fieldset>
           <legend>Columns to project (Plan: Scan → Project)</legend>
           <div class="columns" id="columns-list" />
-          <p class="muted small">Leave empty = project nothing (output schema will be policy-allowed columns only).</p>
+          <p class="muted small">
+            Columns shown in <span class="sensitive">red</span> are
+            policy-sensitive for <em>some</em> principal — PII, PAN, or
+            similarly scoped fields. They aren't blocked at the form
+            level; submit and the rewriter will drop them if the chosen
+            principal lacks a grant. Leave the list empty to project
+            nothing (output schema will be policy-allowed columns only).
+          </p>
         </fieldset>
 
         <fieldset>
@@ -176,12 +319,6 @@ const demoConfig = {
             It mirrors the Lean reference one-for-one.
           </li>
           <li>
-            The <strong>Biscuit-Datalog migration is in progress</strong>:
-            the production gateway will dispatch through
-            <code>biscuit_auth::datalog::World</code>, but that pathway is
-            task #4 and is not what this WASM executes today.
-          </li>
-          <li>
             Refusal reasons surfaced: <em>unknown relation</em>
             (catalog lookup empty) and <em>filter on forbidden
             column</em> (predicate touches columns outside the principal's
@@ -208,12 +345,19 @@ const demoConfig = {
     import init, { rewrite_plan } from "../wasm/postern_wasm.js";
     import wasmUrl from "../wasm/postern_wasm_bg.wasm?url";
 
+    type Row = Record<string, string | number | boolean>;
     interface DemoConfig {
       catalog: Record<string, string[]>;
       policy: Array<{ principal: string; relation: string; columns: string[] }>;
       principals: ReadonlyArray<string>;
       sensitive: Record<string, ReadonlyArray<string>>;
+      tables: Record<string, Row[]>;
     }
+
+    type Plan =
+      | { op: "scan"; rel: string }
+      | { op: "project"; sub: Plan; cols: string[] }
+      | { op: "filter"; sub: Plan; col: string };
 
     const configEl = document.getElementById("demo-config") as HTMLScriptElement | null;
     if (!configEl) throw new Error("demo-config script tag missing");
@@ -257,13 +401,51 @@ const demoConfig = {
     relationSelect.addEventListener("change", refreshColumnList);
     refreshColumnList();
 
+    // --- §2b: per-principal biscuit panes ---------------------------------
+    // Mock tokens — purely for visual flavor; not real biscuits. The leading
+    // bytes mimic a biscuit v3 protobuf header (En0K... = `0x12 0x7d 0x0a`)
+    // so the shape is plausible without minting actual Ed25519 signatures.
+    const MOCK_BEARER_TOKENS: Record<string, string> = {
+      CRM: "En0KEwoEQ1JNGAMiCQoHCAoSAxiACBIkCAASIB7n3T_pmqXcZmAYqGmU0AdgWxPq",
+      CardOps: "En4KFAoHQ2FyZE9wcxgDIgkKBwgKEgMYgAgSJAgAEiB9KqL2vXmYcZmA0Bjpc",
+      FraudRisk: "En8KFgoJRnJhdWRSaXNrGAMiCQoHCAoSAxiACBIkCAASIPMtR9nyzAhWcXqV",
+    };
+
+    const biscuitPrincipalLabel = document.getElementById(
+      "biscuit-principal-label",
+    ) as HTMLElement | null;
+    const biscuitLogical = document.getElementById(
+      "biscuit-bearer-logical",
+    ) as HTMLElement | null;
+    const biscuitWire = document.getElementById(
+      "biscuit-bearer-wire",
+    ) as HTMLElement | null;
+
+    function refreshBiscuitPane(principal: string): void {
+      if (biscuitPrincipalLabel) biscuitPrincipalLabel.textContent = principal;
+      if (biscuitLogical) {
+        biscuitLogical.textContent = `user("${principal}").`;
+      }
+      if (biscuitWire) {
+        biscuitWire.textContent =
+          MOCK_BEARER_TOKENS[principal] ?? MOCK_BEARER_TOKENS.CRM!;
+      }
+    }
+
+    const principalGroup = document.getElementById("principal-group");
+    principalGroup?.addEventListener("change", (e) => {
+      const tgt = e.target as HTMLInputElement | null;
+      if (tgt && tgt.name === "principal") refreshBiscuitPane(tgt.value);
+    });
+    refreshBiscuitPane(cfg.principals[0] ?? "CRM");
+
     // Build the input plan IR from form selections.
-    function buildPlan(formData: FormData) {
+    function buildPlan(formData: FormData): Plan {
       const rel = String(formData.get("relation"));
       const cols = formData.getAll("col").map(String);
       const filter = String(formData.get("filter") ?? "");
 
-      let plan: unknown = { op: "scan", rel };
+      let plan: Plan = { op: "scan", rel };
       if (filter) plan = { op: "filter", sub: plan, col: filter };
       if (cols.length > 0) plan = { op: "project", sub: plan, cols };
       return plan;
@@ -277,36 +459,158 @@ const demoConfig = {
       return wasmReady;
     }
 
+    // Render a plan as an approximate SQL string. The Plan IR has no
+    // predicate value attached to Filter (paper §Plan IR), so we
+    // surface filter columns as `WHERE <col> IS NOT NULL` for shape.
+    function planToSql(plan: Plan): string {
+      // Walk top-down to collect the projection, filter cols, and base rel.
+      let cols: string[] | "*" = "*";
+      const filters: string[] = [];
+      let cur: Plan = plan;
+      while (cur.op !== "scan") {
+        if (cur.op === "project") {
+          // Outermost Project wins (it narrows further).
+          if (cols === "*") cols = cur.cols.slice();
+          cur = cur.sub;
+        } else {
+          filters.push(cur.col);
+          cur = cur.sub;
+        }
+      }
+      const rel = cur.rel;
+      const projectClause =
+        cols === "*"
+          ? "*"
+          : cols.length === 0
+            ? "/* nothing */"
+            : cols.join(", ");
+      const whereClause = filters.length
+        ? "\nWHERE " + filters.map((c) => `${c} IS NOT NULL`).join(" AND ")
+        : "";
+      return `SELECT ${projectClause}\nFROM ${rel}${whereClause};`;
+    }
+
+    // Execute a plan against the synthetic tables. Returns the
+    // (columns, rows) the agent would see if no policy were in place
+    // (for the input plan) or after the rewrite (for the output plan).
+    function executePlan(plan: Plan, tables: Record<string, Row[]>): {
+      columns: string[];
+      rows: Row[];
+    } {
+      if (plan.op === "scan") {
+        const rows = tables[plan.rel] ?? [];
+        const columns = cfg.catalog[plan.rel] ?? [];
+        return { columns, rows };
+      }
+      if (plan.op === "filter") {
+        // Filter side-channel is the column choice, not a predicate value;
+        // demo passes rows through unchanged (the IR carries no value).
+        return executePlan(plan.sub, tables);
+      }
+      const inner = executePlan(plan.sub, tables);
+      // Project: keep only requested columns that exist in the inner schema.
+      const keep = plan.cols.filter((c) => inner.columns.includes(c));
+      const rows = inner.rows.map((r) => {
+        const out: Row = {};
+        for (const c of keep) out[c] = r[c]!;
+        return out;
+      });
+      return { columns: keep, rows };
+    }
+
+    function renderTable(
+      columns: string[],
+      rows: Row[],
+      sensitiveCols: ReadonlyArray<string> = [],
+      emptyMsg = "(no columns released)",
+    ): string {
+      if (columns.length === 0) {
+        return `<p class="df-empty">${escape(emptyMsg)}</p>`;
+      }
+      const thead = columns
+        .map((c) => {
+          const cls = sensitiveCols.includes(c) ? ' class="sensitive"' : "";
+          return `<th${cls}>${escape(c)}</th>`;
+        })
+        .join("");
+      const tbody = rows
+        .map((r) => {
+          const cells = columns
+            .map((c) => {
+              const cls = sensitiveCols.includes(c) ? ' class="sensitive"' : "";
+              return `<td${cls}>${escape(String(r[c] ?? ""))}</td>`;
+            })
+            .join("");
+          return `<tr>${cells}</tr>`;
+        })
+        .join("");
+      return `<div class="df-wrap"><table class="df"><thead><tr>${thead}</tr></thead><tbody>${tbody}</tbody></table></div>`;
+    }
+
     function renderResult(
-      input: unknown,
-      response: { ok: true; allowed: string[]; output_plan: unknown } | { ok: false; reason: string; allowed: string[] },
+      input: Plan,
+      response:
+        | { ok: true; allowed: string[]; output_plan: Plan }
+        | { ok: false; reason: string; allowed: string[] },
       principal: string,
     ): string {
-      const allowed = response.allowed.length
+      const inputRel =
+        input.op === "scan"
+          ? input.rel
+          : input.op === "project" && input.sub.op === "scan"
+            ? input.sub.rel
+            : "(unknown)";
+      const sensitiveCols = cfg.sensitive[inputRel] ?? [];
+
+      const allowedLine = response.allowed.length
         ? response.allowed.map((c) => `<code>${escape(c)}</code>`).join(" ")
         : '<em class="muted">(none — principal has no grants on this relation)</em>';
 
-      const inputPretty = `<pre class="plan">${escape(JSON.stringify(input, null, 2))}</pre>`;
+      const inputSql = `<pre class="sql">${escape(planToSql(input))}</pre>`;
+      const inputExec = executePlan(input, cfg.tables);
+      const inputDf = renderTable(
+        inputExec.columns,
+        inputExec.rows,
+        sensitiveCols,
+        "(plan asks for no columns)",
+      );
+
+      const headerLine = `
+        <div class="result__cols">
+          <strong>Policy-allowed columns</strong> for
+          <code>${escape(principal)}</code> on
+          <code>${escape(inputRel)}</code>: ${allowedLine}
+        </div>
+      `;
 
       if (response.ok) {
-        const outputPretty = `<pre class="plan plan--ok">${escape(JSON.stringify(response.output_plan, null, 2))}</pre>`;
+        const outputSql = `<pre class="sql sql--ok">${escape(planToSql(response.output_plan))}</pre>`;
+        const outputExec = executePlan(response.output_plan, cfg.tables);
+        const outputDf = renderTable(
+          outputExec.columns,
+          outputExec.rows,
+          sensitiveCols,
+          "(empty projection — no allowed columns intersected the request)",
+        );
         return `
           <div class="result__head verdict verdict--ok">
             <span class="badge ok">accepted</span>
-            <span>The rewriter wrapped the plan in <code>Project</code> with the policy-allowed projection.</span>
+            <span>Rewritten to the policy-allowed projection over <code>${escape(inputRel)}</code>.</span>
           </div>
-          <div class="result__cols">
-            <strong>Policy-allowed columns</strong> for <code>${escape(principal)}</code>: ${allowed}
-          </div>
-          <div class="result__plans">
-            <div>
-              <h4>Input plan</h4>
-              ${inputPretty}
-            </div>
-            <div>
-              <h4>Output plan</h4>
-              ${outputPretty}
-            </div>
+          ${headerLine}
+          <div class="result__pair">
+            <section class="result__col">
+              <h4>Agent's request</h4>
+              <p class="result__hint">What the agent asked the lake for (no policy).</p>
+              ${inputSql}
+              ${inputDf}
+            </section>
+            <section class="result__col">
+              <h4>Through Postern</h4>
+              <p class="result__hint">After the verified rewriter narrowed the projection.</p>
+              ${outputSql}
+              ${outputDf}
+            </section>
           </div>
         `;
       }
@@ -315,18 +619,20 @@ const demoConfig = {
           <span class="badge bad">refused</span>
           <span>${escape(response.reason)}</span>
         </div>
-        <div class="result__cols">
-          <strong>Policy-allowed columns</strong> for <code>${escape(principal)}</code>: ${allowed}
-        </div>
-        <div class="result__plans">
-          <div>
-            <h4>Input plan</h4>
-            ${inputPretty}
-          </div>
-          <div>
-            <h4>Output plan</h4>
-            <pre class="plan plan--bad">none (refused)</pre>
-          </div>
+        ${headerLine}
+        <div class="result__pair">
+          <section class="result__col">
+            <h4>Agent's request</h4>
+            <p class="result__hint">What the agent asked the lake for (no policy).</p>
+            ${inputSql}
+            ${inputDf}
+          </section>
+          <section class="result__col">
+            <h4>Through Postern</h4>
+            <p class="result__hint">Rewriter refused — no rows are released.</p>
+            <pre class="sql sql--bad">-- refused: ${escape(response.reason)}</pre>
+            <p class="df-empty">(no rows released)</p>
+          </section>
         </div>
       `;
     }
@@ -350,7 +656,9 @@ const demoConfig = {
         plan,
       };
       try {
-        const response = rewrite_plan(request);
+        const response = rewrite_plan(request) as
+          | { ok: true; allowed: string[]; output_plan: Plan }
+          | { ok: false; reason: string; allowed: string[] };
         result.innerHTML = renderResult(plan, response, principal);
       } catch (err) {
         result.innerHTML = `<p class="muted">rewrite_plan errored: ${escape(String(err))}</p>`;
@@ -361,6 +669,7 @@ const demoConfig = {
       // Defer until after defaults are re-applied.
       setTimeout(() => {
         refreshColumnList();
+        refreshBiscuitPane(cfg.principals[0] ?? "CRM");
         result.innerHTML = `<p class="muted">Pick options and submit to see the rewrite.</p>`;
       }, 0);
     });
@@ -421,6 +730,50 @@ const demoConfig = {
 
   .small {
     font-size: 0.86rem;
+  }
+
+  .cast {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 1rem;
+    margin: 1rem 0 0.6rem;
+  }
+
+  .cast-card {
+    border: 1px solid var(--border);
+    background: var(--bg-elevated);
+    border-radius: 4px;
+    padding: 0.9rem 1rem 1rem;
+    font-size: 0.94rem;
+  }
+
+  .cast-card header {
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+    margin-bottom: 0.4rem;
+  }
+
+  .cast-card h3 {
+    margin: 0;
+    font-size: 1rem;
+    color: var(--accent);
+  }
+
+  .cast-card p {
+    margin: 0 0 0.55rem;
+    line-height: 1.45;
+  }
+
+  .grant-line {
+    font-size: 0.85rem;
+    color: var(--fg-muted);
+    border-top: 1px dashed var(--border);
+    padding-top: 0.45rem;
+  }
+
+  .grant-line code {
+    font-size: 0.8rem;
   }
 
   .tables {
@@ -618,39 +971,100 @@ const demoConfig = {
     font-size: 0.94rem;
   }
 
-  .result__plans {
+  .result__pair {
     display: grid;
     grid-template-columns: 1fr;
-    gap: 0.8rem;
+    gap: 1rem;
   }
 
-  @media (min-width: 720px) {
-    .result__plans {
+  @media (min-width: 800px) {
+    .result__pair {
       grid-template-columns: 1fr 1fr;
     }
   }
 
-  .result__plans h4 {
+  .result__col {
+    min-width: 0;
+  }
+
+  .result__col h4 {
     font-family: var(--font-mono);
     font-size: 0.76rem;
     text-transform: uppercase;
     letter-spacing: 0.08em;
     color: var(--fg-muted);
-    margin: 0 0 0.3rem;
+    margin: 0 0 0.25rem;
   }
 
-  .plan {
+  .result__hint {
+    font-size: 0.82rem;
+    color: var(--fg-muted);
+    margin: 0 0 0.5rem;
+  }
+
+  .sql {
+    font-family: ui-monospace, "JetBrains Mono", Menlo, monospace;
     font-size: 0.84rem;
-    margin: 0;
+    line-height: 1.4;
+    margin: 0 0 0.5rem;
+    padding: 0.55rem 0.75rem;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    white-space: pre;
+    overflow-x: auto;
   }
 
-  .plan--ok {
+  .sql--ok {
     border-left: 3px solid var(--accept);
   }
 
-  .plan--bad {
+  .sql--bad {
     border-left: 3px solid var(--refuse);
     color: var(--refuse);
+  }
+
+  .df-wrap {
+    overflow-x: auto;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    background: var(--bg);
+  }
+
+  table.df {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: ui-monospace, "JetBrains Mono", Menlo, monospace;
+    font-size: 0.78rem;
+  }
+
+  table.df th,
+  table.df td {
+    padding: 0.3rem 0.55rem;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+
+  table.df th {
+    background: var(--bg-elevated);
+    color: var(--fg-muted);
+    font-weight: 500;
+  }
+
+  table.df tr:last-child td {
+    border-bottom: 0;
+  }
+
+  .df-empty {
+    margin: 0;
+    padding: 0.6rem 0.8rem;
+    font-size: 0.85rem;
+    color: var(--fg-muted);
+    font-style: italic;
+    border: 1px dashed var(--border);
+    border-radius: 3px;
+    background: var(--bg-elevated);
   }
 
   .about {
@@ -670,5 +1084,81 @@ const demoConfig = {
 
   .about ul {
     margin: 0.6rem 0 0;
+  }
+
+  /* §2b — biscuit-on-the-wire panes. Reuses .policy-grid layout. */
+  .biscuit-grid .policy-title {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .biscuit-source {
+    font-family: var(--font-mono);
+    font-size: 0.66rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 0.08rem 0.42rem;
+    border-radius: 2px;
+    font-weight: 500;
+  }
+
+  .biscuit-source--gw {
+    background: rgba(47, 107, 58, 0.16);
+    color: var(--accept);
+  }
+
+  .biscuit-source--bearer {
+    background: rgba(176, 122, 58, 0.18);
+    color: #b07a3a;
+  }
+
+  .biscuit-cap {
+    margin: 0 0 0.4rem;
+  }
+
+  .biscuit-pane {
+    margin: 0;
+  }
+
+  .biscuit-pane--gw {
+    border-left: 3px solid var(--accept);
+  }
+
+  .biscuit-pane--bearer {
+    border-left: 3px solid #b07a3a;
+  }
+
+  .biscuit-subhead {
+    margin: 0.7rem 0 0.3rem;
+    font-family: var(--font-mono);
+    font-size: 0.74rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--fg-muted);
+    font-weight: 500;
+  }
+
+  .biscuit-wire {
+    font-family: ui-monospace, "JetBrains Mono", Menlo, monospace;
+    font-size: 0.74rem;
+    line-height: 1.35;
+    margin: 0;
+    padding: 0.5rem 0.7rem;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    color: var(--fg-muted);
+    word-break: break-all;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  .biscuit-note {
+    margin-top: 0.9rem;
+    padding: 0.55rem 0.8rem;
+    border: 1px dashed var(--border-strong);
+    border-radius: 3px;
+    line-height: 1.5;
   }
 </style>

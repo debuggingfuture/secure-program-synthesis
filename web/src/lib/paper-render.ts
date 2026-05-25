@@ -30,6 +30,10 @@ export interface PaperFrontmatter {
 export interface RenderedPaper {
   frontmatter: PaperFrontmatter;
   html: string;
+  /** Rendered HTML for the abstract — math, citations, code spans
+   *  resolved against the same pipeline as the body. Empty when the
+   *  paper has no abstract. */
+  abstractHtml: string;
   references: Array<{ key: string; index: number; text: string }>;
 }
 
@@ -225,6 +229,10 @@ function escapeHtml(s: string): string {
     .replace(/>/g, "&gt;");
 }
 
+function escapeAttr(s: string): string {
+  return escapeHtml(s).replace(/"/g, "&quot;");
+}
+
 /**
  * Pre-process math: replace `$$...$$` and `$...$` with rendered HTML
  * BEFORE markdown-it sees them. We emit raw HTML directly — earlier
@@ -248,8 +256,10 @@ function renderMathSpans(body: string): string {
   // followed by whitespace, closing `$` must NOT be preceded by
   // whitespace, and closing `$` must NOT be followed by a digit
   // (avoid currency `$5`). Reject opening when preceded by `\` or `$`.
+  // Allow newlines inside the body so multi-line inline math (e.g. the
+  // long rewriter signature in the abstract) matches.
   out = out.replace(
-    /(^|[^\w\\$])\$([^\s$][^$\n]*?[^\s$])\$(?!\d)/g,
+    /(^|[^\w\\$])\$([^\s$][^$]*?[^\s$])\$(?!\d)/g,
     (_m, pre: string, expr: string) =>
       pre +
       '<span class="math-inline">' +
@@ -283,12 +293,38 @@ export async function renderPaper(): Promise<RenderedPaper> {
   //    later text mutation.
   const cited = resolveCitations(body, state);
 
+  // 1b. Rewrite pandoc-flavoured figure references for HTML output.
+  //     Markdown source carries `![cap](figures/foo.pdf){#fig:x width=N%}`
+  //     because tectonic embeds the PDF directly. For the web we
+  //     (a) swap the .pdf path for the SVG mirror under /figures/,
+  //     and (b) wrap the result in <figure>/<figcaption> so the caption
+  //     renders (markdown-it ignores pandoc attr blocks otherwise).
+  const figured = cited.replace(
+    /!\[([^\]]+)\]\(figures\/([^)]+)\.pdf\)(\{[^}]*\})?/g,
+    (_m, caption: string, base: string) =>
+      '<figure class="paper-figure">' +
+      `<img src="/figures/${base}.svg" alt="${escapeAttr(caption)}" />` +
+      `<figcaption>${caption}</figcaption>` +
+      "</figure>",
+  );
+
   // 2. swap math expressions for inline KaTeX HTML.
-  const mathed = renderMathSpans(cited);
+  const mathed = renderMathSpans(figured);
 
   // 3. markdown → HTML.
   const md = setupMarkdown();
   const html = md.render(mathed);
+
+  // 3b. Render the abstract through the same pipeline so its
+  //     `$math$`, `[@cite]`, `` `code` ``, and `**bold**` resolve
+  //     instead of appearing as literal source text. We use
+  //     `renderInline` so the abstract doesn't get wrapped in <p>.
+  let abstractHtml = "";
+  if (typeof fm.abstract === "string" && fm.abstract.trim().length) {
+    const aCited = resolveCitations(fm.abstract, state);
+    const aMathed = renderMathSpans(aCited);
+    abstractHtml = md.renderInline(aMathed);
+  }
 
   // 4. build references section in citation order.
   const references = state.order.map((key, i) => {
@@ -300,5 +336,5 @@ export async function renderPaper(): Promise<RenderedPaper> {
     };
   });
 
-  return { frontmatter: fm, html, references };
+  return { frontmatter: fm, html, abstractHtml, references };
 }

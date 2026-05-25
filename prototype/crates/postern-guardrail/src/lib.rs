@@ -67,10 +67,13 @@
 //! lacks) or a sandbox (Wasm, `seccomp`, ...). The strongest
 //! pure-Rust analog is to compile the agent crate as `#![no_std]`
 //! against a curated prelude that doesn't expose `panic_handler`,
-//! `println!`, or other side-effect sinks; we demonstrate this in
-//! `tests/no_std_agent.rs`, where the agent uses our API to
-//! compute and ship a value through the only available sink, and
-//! the test would not link if the agent tried to call `std::*`.
+//! `println!`, or other side-effect sinks. This crate root carries
+//! `#![cfg_attr(not(test), no_std)]` (below), so a downstream
+//! agent crate that depends on us with `default-features = false`
+//! cannot reach `std::*` through our re-exports — link failure is
+//! the enforcement mechanism. A separate `tests/no_std_agent.rs`
+//! integration test demonstrating an end-to-end no_std agent
+//! against a curated prelude is a future-work item.
 //!
 //! ## Compile-time bypass demonstrations
 //!
