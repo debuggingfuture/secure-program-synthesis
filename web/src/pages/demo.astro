@@ -15,12 +15,15 @@ const datalogText = policyAsDatalog(POLICY);
 
 const relations = Object.keys(CATALOG);
 
-// Serialise data the client form needs.
+// Serialise data the client form needs. `tables` carries the sample
+// rows so the result panel can show actual dataframes (what the agent
+// would receive before vs. after the rewrite).
 const demoConfig = {
   catalog: CATALOG,
   policy: POLICY,
   principals: PRINCIPALS,
   sensitive: SENSITIVE,
+  tables: TABLES,
 };
 ---
 
@@ -294,12 +297,19 @@ const demoConfig = {
     import init, { rewrite_plan } from "../wasm/postern_wasm.js";
     import wasmUrl from "../wasm/postern_wasm_bg.wasm?url";
 
+    type Row = Record<string, string | number | boolean>;
     interface DemoConfig {
       catalog: Record<string, string[]>;
       policy: Array<{ principal: string; relation: string; columns: string[] }>;
       principals: ReadonlyArray<string>;
       sensitive: Record<string, ReadonlyArray<string>>;
+      tables: Record<string, Row[]>;
     }
+
+    type Plan =
+      | { op: "scan"; rel: string }
+      | { op: "project"; sub: Plan; cols: string[] }
+      | { op: "filter"; sub: Plan; col: string };
 
     const configEl = document.getElementById("demo-config") as HTMLScriptElement | null;
     if (!configEl) throw new Error("demo-config script tag missing");
@@ -344,12 +354,12 @@ const demoConfig = {
     refreshColumnList();
 
     // Build the input plan IR from form selections.
-    function buildPlan(formData: FormData) {
+    function buildPlan(formData: FormData): Plan {
       const rel = String(formData.get("relation"));
       const cols = formData.getAll("col").map(String);
       const filter = String(formData.get("filter") ?? "");
 
-      let plan: unknown = { op: "scan", rel };
+      let plan: Plan = { op: "scan", rel };
       if (filter) plan = { op: "filter", sub: plan, col: filter };
       if (cols.length > 0) plan = { op: "project", sub: plan, cols };
       return plan;
@@ -363,36 +373,158 @@ const demoConfig = {
       return wasmReady;
     }
 
+    // Render a plan as an approximate SQL string. The Plan IR has no
+    // predicate value attached to Filter (paper §Plan IR), so we
+    // surface filter columns as `WHERE <col> IS NOT NULL` for shape.
+    function planToSql(plan: Plan): string {
+      // Walk top-down to collect the projection, filter cols, and base rel.
+      let cols: string[] | "*" = "*";
+      const filters: string[] = [];
+      let cur: Plan = plan;
+      while (cur.op !== "scan") {
+        if (cur.op === "project") {
+          // Outermost Project wins (it narrows further).
+          if (cols === "*") cols = cur.cols.slice();
+          cur = cur.sub;
+        } else {
+          filters.push(cur.col);
+          cur = cur.sub;
+        }
+      }
+      const rel = cur.rel;
+      const projectClause =
+        cols === "*"
+          ? "*"
+          : cols.length === 0
+            ? "/* nothing */"
+            : cols.join(", ");
+      const whereClause = filters.length
+        ? "\nWHERE " + filters.map((c) => `${c} IS NOT NULL`).join(" AND ")
+        : "";
+      return `SELECT ${projectClause}\nFROM ${rel}${whereClause};`;
+    }
+
+    // Execute a plan against the synthetic tables. Returns the
+    // (columns, rows) the agent would see if no policy were in place
+    // (for the input plan) or after the rewrite (for the output plan).
+    function executePlan(plan: Plan, tables: Record<string, Row[]>): {
+      columns: string[];
+      rows: Row[];
+    } {
+      if (plan.op === "scan") {
+        const rows = tables[plan.rel] ?? [];
+        const columns = cfg.catalog[plan.rel] ?? [];
+        return { columns, rows };
+      }
+      if (plan.op === "filter") {
+        // Filter side-channel is the column choice, not a predicate value;
+        // demo passes rows through unchanged (the IR carries no value).
+        return executePlan(plan.sub, tables);
+      }
+      const inner = executePlan(plan.sub, tables);
+      // Project: keep only requested columns that exist in the inner schema.
+      const keep = plan.cols.filter((c) => inner.columns.includes(c));
+      const rows = inner.rows.map((r) => {
+        const out: Row = {};
+        for (const c of keep) out[c] = r[c]!;
+        return out;
+      });
+      return { columns: keep, rows };
+    }
+
+    function renderTable(
+      columns: string[],
+      rows: Row[],
+      sensitiveCols: ReadonlyArray<string> = [],
+      emptyMsg = "(no columns released)",
+    ): string {
+      if (columns.length === 0) {
+        return `<p class="df-empty">${escape(emptyMsg)}</p>`;
+      }
+      const thead = columns
+        .map((c) => {
+          const cls = sensitiveCols.includes(c) ? ' class="sensitive"' : "";
+          return `<th${cls}>${escape(c)}</th>`;
+        })
+        .join("");
+      const tbody = rows
+        .map((r) => {
+          const cells = columns
+            .map((c) => {
+              const cls = sensitiveCols.includes(c) ? ' class="sensitive"' : "";
+              return `<td${cls}>${escape(String(r[c] ?? ""))}</td>`;
+            })
+            .join("");
+          return `<tr>${cells}</tr>`;
+        })
+        .join("");
+      return `<div class="df-wrap"><table class="df"><thead><tr>${thead}</tr></thead><tbody>${tbody}</tbody></table></div>`;
+    }
+
     function renderResult(
-      input: unknown,
-      response: { ok: true; allowed: string[]; output_plan: unknown } | { ok: false; reason: string; allowed: string[] },
+      input: Plan,
+      response:
+        | { ok: true; allowed: string[]; output_plan: Plan }
+        | { ok: false; reason: string; allowed: string[] },
       principal: string,
     ): string {
-      const allowed = response.allowed.length
+      const inputRel =
+        input.op === "scan"
+          ? input.rel
+          : input.op === "project" && input.sub.op === "scan"
+            ? input.sub.rel
+            : "(unknown)";
+      const sensitiveCols = cfg.sensitive[inputRel] ?? [];
+
+      const allowedLine = response.allowed.length
         ? response.allowed.map((c) => `<code>${escape(c)}</code>`).join(" ")
         : '<em class="muted">(none — principal has no grants on this relation)</em>';
 
-      const inputPretty = `<pre class="plan">${escape(JSON.stringify(input, null, 2))}</pre>`;
+      const inputSql = `<pre class="sql">${escape(planToSql(input))}</pre>`;
+      const inputExec = executePlan(input, cfg.tables);
+      const inputDf = renderTable(
+        inputExec.columns,
+        inputExec.rows,
+        sensitiveCols,
+        "(plan asks for no columns)",
+      );
+
+      const headerLine = `
+        <div class="result__cols">
+          <strong>Policy-allowed columns</strong> for
+          <code>${escape(principal)}</code> on
+          <code>${escape(inputRel)}</code>: ${allowedLine}
+        </div>
+      `;
 
       if (response.ok) {
-        const outputPretty = `<pre class="plan plan--ok">${escape(JSON.stringify(response.output_plan, null, 2))}</pre>`;
+        const outputSql = `<pre class="sql sql--ok">${escape(planToSql(response.output_plan))}</pre>`;
+        const outputExec = executePlan(response.output_plan, cfg.tables);
+        const outputDf = renderTable(
+          outputExec.columns,
+          outputExec.rows,
+          sensitiveCols,
+          "(empty projection — no allowed columns intersected the request)",
+        );
         return `
           <div class="result__head verdict verdict--ok">
             <span class="badge ok">accepted</span>
-            <span>The rewriter wrapped the plan in <code>Project</code> with the policy-allowed projection.</span>
+            <span>Rewritten to the policy-allowed projection over <code>${escape(inputRel)}</code>.</span>
           </div>
-          <div class="result__cols">
-            <strong>Policy-allowed columns</strong> for <code>${escape(principal)}</code>: ${allowed}
-          </div>
-          <div class="result__plans">
-            <div>
-              <h4>Input plan</h4>
-              ${inputPretty}
-            </div>
-            <div>
-              <h4>Output plan</h4>
-              ${outputPretty}
-            </div>
+          ${headerLine}
+          <div class="result__pair">
+            <section class="result__col">
+              <h4>Agent's request</h4>
+              <p class="result__hint">What the agent asked the lake for (no policy).</p>
+              ${inputSql}
+              ${inputDf}
+            </section>
+            <section class="result__col">
+              <h4>Through Postern</h4>
+              <p class="result__hint">After the verified rewriter narrowed the projection.</p>
+              ${outputSql}
+              ${outputDf}
+            </section>
           </div>
         `;
       }
@@ -401,18 +533,20 @@ const demoConfig = {
           <span class="badge bad">refused</span>
           <span>${escape(response.reason)}</span>
         </div>
-        <div class="result__cols">
-          <strong>Policy-allowed columns</strong> for <code>${escape(principal)}</code>: ${allowed}
-        </div>
-        <div class="result__plans">
-          <div>
-            <h4>Input plan</h4>
-            ${inputPretty}
-          </div>
-          <div>
-            <h4>Output plan</h4>
-            <pre class="plan plan--bad">none (refused)</pre>
-          </div>
+        ${headerLine}
+        <div class="result__pair">
+          <section class="result__col">
+            <h4>Agent's request</h4>
+            <p class="result__hint">What the agent asked the lake for (no policy).</p>
+            ${inputSql}
+            ${inputDf}
+          </section>
+          <section class="result__col">
+            <h4>Through Postern</h4>
+            <p class="result__hint">Rewriter refused — no rows are released.</p>
+            <pre class="sql sql--bad">-- refused: ${escape(response.reason)}</pre>
+            <p class="df-empty">(no rows released)</p>
+          </section>
         </div>
       `;
     }
@@ -436,7 +570,9 @@ const demoConfig = {
         plan,
       };
       try {
-        const response = rewrite_plan(request);
+        const response = rewrite_plan(request) as
+          | { ok: true; allowed: string[]; output_plan: Plan }
+          | { ok: false; reason: string; allowed: string[] };
         result.innerHTML = renderResult(plan, response, principal);
       } catch (err) {
         result.innerHTML = `<p class="muted">rewrite_plan errored: ${escape(String(err))}</p>`;
@@ -748,39 +884,100 @@ const demoConfig = {
     font-size: 0.94rem;
   }
 
-  .result__plans {
+  .result__pair {
     display: grid;
     grid-template-columns: 1fr;
-    gap: 0.8rem;
+    gap: 1rem;
   }
 
-  @media (min-width: 720px) {
-    .result__plans {
+  @media (min-width: 800px) {
+    .result__pair {
       grid-template-columns: 1fr 1fr;
     }
   }
 
-  .result__plans h4 {
+  .result__col {
+    min-width: 0;
+  }
+
+  .result__col h4 {
     font-family: var(--font-mono);
     font-size: 0.76rem;
     text-transform: uppercase;
     letter-spacing: 0.08em;
     color: var(--fg-muted);
-    margin: 0 0 0.3rem;
+    margin: 0 0 0.25rem;
   }
 
-  .plan {
+  .result__hint {
+    font-size: 0.82rem;
+    color: var(--fg-muted);
+    margin: 0 0 0.5rem;
+  }
+
+  .sql {
+    font-family: ui-monospace, "JetBrains Mono", Menlo, monospace;
     font-size: 0.84rem;
-    margin: 0;
+    line-height: 1.4;
+    margin: 0 0 0.5rem;
+    padding: 0.55rem 0.75rem;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    white-space: pre;
+    overflow-x: auto;
   }
 
-  .plan--ok {
+  .sql--ok {
     border-left: 3px solid var(--accept);
   }
 
-  .plan--bad {
+  .sql--bad {
     border-left: 3px solid var(--refuse);
     color: var(--refuse);
+  }
+
+  .df-wrap {
+    overflow-x: auto;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    background: var(--bg);
+  }
+
+  table.df {
+    width: 100%;
+    border-collapse: collapse;
+    font-family: ui-monospace, "JetBrains Mono", Menlo, monospace;
+    font-size: 0.78rem;
+  }
+
+  table.df th,
+  table.df td {
+    padding: 0.3rem 0.55rem;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+  }
+
+  table.df th {
+    background: var(--bg-elevated);
+    color: var(--fg-muted);
+    font-weight: 500;
+  }
+
+  table.df tr:last-child td {
+    border-bottom: 0;
+  }
+
+  .df-empty {
+    margin: 0;
+    padding: 0.6rem 0.8rem;
+    font-size: 0.85rem;
+    color: var(--fg-muted);
+    font-style: italic;
+    border: 1px dashed var(--border);
+    border-radius: 3px;
+    background: var(--bg-elevated);
   }
 
   .about {
