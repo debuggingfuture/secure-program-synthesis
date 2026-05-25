@@ -389,10 +389,7 @@ impl Plan {
                 out
             }
             Plan::Aggregate {
-                agg,
-                col,
-                group_by,
-                ..
+                agg, col, group_by, ..
             } => {
                 let mut out = group_by.clone();
                 out.push(agg.output_column(col));
@@ -504,7 +501,9 @@ impl Plan {
                 left.collect_group_by_cols(acc);
                 right.collect_group_by_cols(acc);
             }
-            Plan::Aggregate { group_by, inner, .. } => {
+            Plan::Aggregate {
+                group_by, inner, ..
+            } => {
                 acc.extend(group_by.iter().cloned());
                 inner.collect_group_by_cols(acc);
             }
