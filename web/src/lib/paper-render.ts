@@ -30,6 +30,10 @@ export interface PaperFrontmatter {
 export interface RenderedPaper {
   frontmatter: PaperFrontmatter;
   html: string;
+  /** Rendered HTML for the abstract — math, citations, code spans
+   *  resolved against the same pipeline as the body. Empty when the
+   *  paper has no abstract. */
+  abstractHtml: string;
   references: Array<{ key: string; index: number; text: string }>;
 }
 
@@ -252,8 +256,10 @@ function renderMathSpans(body: string): string {
   // followed by whitespace, closing `$` must NOT be preceded by
   // whitespace, and closing `$` must NOT be followed by a digit
   // (avoid currency `$5`). Reject opening when preceded by `\` or `$`.
+  // Allow newlines inside the body so multi-line inline math (e.g. the
+  // long rewriter signature in the abstract) matches.
   out = out.replace(
-    /(^|[^\w\\$])\$([^\s$][^$\n]*?[^\s$])\$(?!\d)/g,
+    /(^|[^\w\\$])\$([^\s$][^$]*?[^\s$])\$(?!\d)/g,
     (_m, pre: string, expr: string) =>
       pre +
       '<span class="math-inline">' +
@@ -309,6 +315,17 @@ export async function renderPaper(): Promise<RenderedPaper> {
   const md = setupMarkdown();
   const html = md.render(mathed);
 
+  // 3b. Render the abstract through the same pipeline so its
+  //     `$math$`, `[@cite]`, `` `code` ``, and `**bold**` resolve
+  //     instead of appearing as literal source text. We use
+  //     `renderInline` so the abstract doesn't get wrapped in <p>.
+  let abstractHtml = "";
+  if (typeof fm.abstract === "string" && fm.abstract.trim().length) {
+    const aCited = resolveCitations(fm.abstract, state);
+    const aMathed = renderMathSpans(aCited);
+    abstractHtml = md.renderInline(aMathed);
+  }
+
   // 4. build references section in citation order.
   const references = state.order.map((key, i) => {
     const entry = byKey.get(key);
@@ -319,5 +336,5 @@ export async function renderPaper(): Promise<RenderedPaper> {
     };
   });
 
-  return { frontmatter: fm, html, references };
+  return { frontmatter: fm, html, abstractHtml, references };
 }
