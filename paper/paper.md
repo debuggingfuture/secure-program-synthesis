@@ -530,8 +530,24 @@ $c \notin P.\mathit{allowed}\ p\ \mathit{touched}(q)$, then
 $\mathit{rewrite}\ \mathit{cat}\ P\ p\ q = \mathit{none}$. The
 contrapositive of Theorem 2.
 
+**Theorem 10 (column-grant / Datalog bridge, `bridge_allowed`).**
+Define the compilation
+$P.\mathit{toProgram} : \mathit{Policy} \to \mathit{Program}$ that
+emits one ground $\mathit{right}(p, r, c)$ fact per
+$(\mathit{Grant}\ p\ r\ \mathit{cs},\ c \in \mathit{cs})$ pair and
+no rules. Then for every $P, p, r$,
+$P.\mathit{allowed}\ p\ r = (P.\mathit{toProgram}).\mathit{allowed}\ p\ r$
+*as lists* — same elements in the same insertion order. The
+theorem connects the rewriter of Theorems 1–9 (which consults
+`Policy.allowed` directly) to the Datalog evaluator of
+`verifier/lean/Datalog.lean` (which derives `Program.allowed` by
+projecting $\mathit{right}$ atoms out of `eval P`), removing the
+"as-if Datalog" gap between the column-grant surface DSL and the
+Horn-fragment policy language the gateway dispatches through
+(§5 *Datalog backend*).
+
 `CheckAxioms.lean` audits the axiom dependencies of each theorem.
-For the rewriter side (Theorems 1–9) the set is bounded by
+For the rewriter side (Theorems 1–10) the set is bounded by
 $\{\texttt{propext}, \texttt{Quot.sound}\}$, Lean~4's
 foundational axioms; the proofs of `rewrite_touched` and
 `rewrite_refuses_unknown` depend on no axioms, and no proof
@@ -725,7 +741,7 @@ case we discuss in §1.
 
 # Open challenges and future work
 
-Three extensions of the Lean development are the natural next
+Four extensions of the Lean development are the natural next
 research questions.
 
 *Value-based predicate side-channels and a richer Filter.* The
@@ -742,26 +758,6 @@ deciding when the *value* of an allowed column carries enough
 mutual information about a forbidden one to warrant blocking —
 the same problem space as the differential-privacy boundary
 below.
-
-*Bridging `Policy.allowed` and `Program.allowed`.*
-`verifier/lean/Postern.lean` and `verifier/lean/Datalog.lean`
-today coexist without import: the rewriter consults
-`Policy.allowed prin rel : List Column` (a `flatMap` over
-`Grant.columns`), and the evaluator separately defines
-`Program.allowed prin rel : List Symbol` (a `filterMap` over
-ground `right`-atoms in `eval`). The natural bridge — a
-constructor `Policy.toProgram : Policy → Program` together with
-the theorem
-$$
-  \mathit{bridge\_allowed} :
-  P.\mathit{allowed}\ p\ r =
-  (P.\mathit{toProgram}).\mathit{allowed}\ p\ r
-$$
-— is unstated. Closing it lifts the §4 rewriter theorems through
-the Datalog evaluator, removing the "as-if Datalog" gap between
-the surface column-grant DSL and the Horn-fragment policy
-language that the gateway is designed to dispatch through (§5
-*Datalog backend*).
 
 *Cross-relation joins.* The Plan IR is single-relation. The
 Rust implementation handles joins by per-leg rewriting but the

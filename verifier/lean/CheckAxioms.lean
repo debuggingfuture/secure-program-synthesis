@@ -1,5 +1,6 @@
 import Postern
 import Datalog
+import Bridge
 
 /-
   Compile-time check that every theorem carrying the artifact's
@@ -52,6 +53,14 @@ import Datalog
     no derivation rules). For that regime `eval P` is mem-set-
     equivalent to `P.facts`, which gives the soundness direction
     unconditionally — a useful baseline pending the full proofs.
+
+    Bridge (Bridge.lean — all `sorry`-free):
+      'bridge_allowed'        depends on [propext, Quot.sound]
+                              -- closes the column-grant / Datalog gap:
+                              -- `Policy.allowed = (Policy.toProgram).allowed`
+                              -- as a List Column equality. The translation
+                              -- compiles a column-grant Policy to a rule-free
+                              -- Program of ground `right(_,_,_)` facts.
 
     Datalog headline theorems:
       'eval_monotone'        depends on [propext, Quot.sound]
@@ -116,6 +125,13 @@ import Datalog
 #print axioms Postern.Datalog.maxArity_mono
 -- Saturation helper underpinning the reverse direction of eval_terminates.
 #print axioms Postern.Datalog.iterate_stable_of_step_stable
+
+-- Bridge — Bridge.lean: closes the column-grant / Datalog gap.
+-- `bridge_allowed` connects the rewriter's `Policy.allowed` to the
+-- Datalog evaluator's `Program.allowed`, by compiling each Grant
+-- into one ground `right(prin, rel, c)` fact per column. Fully proved.
+#print axioms Postern.bridge_allowed
+
 -- Headline theorems (open obligations isolated as `sorryAx`).
 #print axioms Postern.Datalog.eval_monotone
 #print axioms Postern.Datalog.herbrandBound_mono
