@@ -33,11 +33,97 @@ const demoConfig = {
       <p class="eyebrow">Interactive demo</p>
       <h1>Financial-institution scenario</h1>
       <p class="lede">
-        Three principals (CRM, CardOps, FraudRisk), three tables, one policy.
-        Submit a plan and the WASM-compiled rewriter answers: <em>rewrite</em>
-        with a projected column list, or <em>refuse</em> with a reason.
+        A retail bank's data lakehouse holds three tables —
+        <code>users_data</code>, <code>cards_data</code>,
+        <code>transactions_data</code> — ingested from upstream CRM,
+        card-management, and ledger systems. Three internal
+        departments query the lake through LLM agents. Each
+        department has a different reason to look at the same
+        rows, so the policy gates <em>which columns</em> reach
+        each agent. Submit a plan and the WASM-compiled rewriter
+        answers: <em>rewrite</em> with a projected column list, or
+        <em>refuse</em> with a reason.
       </p>
     </header>
+
+    <section class="block">
+      <h2>Cast — the three principals</h2>
+      <p class="muted">
+        Each principal is a department-scoped agent identity. The
+        Postern gateway extracts the principal from a Biscuit token
+        on every request and looks up the matching grants.
+      </p>
+      <div class="cast">
+        <article class="cast-card">
+          <header>
+            <h3><code>CRM</code></h3>
+            <span class="muted small">Customer Relationship Management</span>
+          </header>
+          <p>
+            Runs marketing segmentation and customer-support
+            lookups. Needs to identify a user by
+            <code>id</code>/<code>name</code> and know their
+            <code>region</code> and <code>age</code> for campaign
+            targeting. Has <strong>no business reason</strong> to
+            see cards, transactions, or PII like
+            <code class="sensitive">ssn</code> /
+            <code class="sensitive">email</code>.
+          </p>
+          <p class="grant-line">
+            <strong>Allowed:</strong>
+            <code>users_data.&#123;id, name, region, age&#125;</code>
+          </p>
+        </article>
+
+        <article class="cast-card">
+          <header>
+            <h3><code>CardOps</code></h3>
+            <span class="muted small">Card Operations</span>
+          </header>
+          <p>
+            Handles card issuance, activation, and limit changes.
+            Needs the card-level attributes
+            (<code>card_id</code>, <code>card_type</code>,
+            <code>limit</code>, <code>activated</code>) but
+            <strong>must never see the full
+            <code class="sensitive">card_number</code></strong>
+            (PAN — PCI-DSS scope) and has no business with users or
+            transactions in this scenario.
+          </p>
+          <p class="grant-line">
+            <strong>Allowed:</strong>
+            <code>cards_data.&#123;card_id, card_type, limit, activated&#125;</code>
+          </p>
+        </article>
+
+        <article class="cast-card">
+          <header>
+            <h3><code>FraudRisk</code></h3>
+            <span class="muted small">Fraud &amp; Risk Analytics</span>
+          </header>
+          <p>
+            Investigates anomalous spend patterns. Needs the full
+            transactions table to compute spend signatures
+            <em>and</em> a minimum-necessary slice of users
+            (just <code>id</code> + <code>region</code>) to bucket
+            by geography. Does not need
+            <code>name</code>/<code>age</code> for the model and
+            never sees PII or PAN.
+          </p>
+          <p class="grant-line">
+            <strong>Allowed:</strong>
+            <code>transactions_data.&#123;txn_id, card_id, amount, merchant, timestamp&#125;</code>
+            +
+            <code>users_data.&#123;id, region&#125;</code>
+          </p>
+        </article>
+      </div>
+      <p class="muted small">
+        Any principal not in this list (e.g. <code>Marketing</code>,
+        a contractor) falls through the fail-closed default — the
+        rewriter returns an empty projection, never the raw rows.
+      </p>
+    </section>
 
     <section class="block">
       <h2>1. Raw data</h2>
@@ -421,6 +507,50 @@ const demoConfig = {
 
   .small {
     font-size: 0.86rem;
+  }
+
+  .cast {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 1rem;
+    margin: 1rem 0 0.6rem;
+  }
+
+  .cast-card {
+    border: 1px solid var(--border);
+    background: var(--bg-elevated);
+    border-radius: 4px;
+    padding: 0.9rem 1rem 1rem;
+    font-size: 0.94rem;
+  }
+
+  .cast-card header {
+    display: flex;
+    align-items: baseline;
+    gap: 0.6rem;
+    margin-bottom: 0.4rem;
+  }
+
+  .cast-card h3 {
+    margin: 0;
+    font-size: 1rem;
+    color: var(--accent);
+  }
+
+  .cast-card p {
+    margin: 0 0 0.55rem;
+    line-height: 1.45;
+  }
+
+  .grant-line {
+    font-size: 0.85rem;
+    color: var(--fg-muted);
+    border-top: 1px dashed var(--border);
+    padding-top: 0.45rem;
+  }
+
+  .grant-line code {
+    font-size: 0.8rem;
   }
 
   .tables {
