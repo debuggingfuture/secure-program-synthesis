@@ -24,6 +24,13 @@ use std::collections::BTreeMap;
 #[cfg(feature = "datalog-biscuit")]
 pub mod datalog_biscuit;
 
+/// Horn-fragment Datalog programs — Rust mirror of
+/// `verifier/lean/Datalog.lean` plus the `biscuit_auth::datalog::World`
+/// evaluation backend. Public regardless of the `datalog-biscuit`
+/// feature so corpus emitters can serialise `Program` JSON; the
+/// `allowed` function returns a clear error if the feature is off.
+pub mod datalog;
+
 /// Identifier for a principal (e.g. a department or service-account).
 pub type Principal = String;
 /// Relation (table) name.
