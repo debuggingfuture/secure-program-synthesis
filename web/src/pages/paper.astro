@@ -2,7 +2,7 @@
 import Base from "../layouts/Base.astro";
 import { renderPaper } from "../lib/paper-render.ts";
 
-const { frontmatter, html, references } = await renderPaper();
+const { frontmatter, html, abstractHtml, references } = await renderPaper();
 const authorLine = frontmatter.author?.join(", ") ?? "";
 ---
 
@@ -29,10 +29,10 @@ const authorLine = frontmatter.author?.join(", ") ?? "";
         </a>
       </p>
       {
-        frontmatter.abstract && (
+        abstractHtml && (
           <section class="paper__abstract">
             <h2>Abstract</h2>
-            <p>{frontmatter.abstract}</p>
+            <p set:html={abstractHtml} />
             {frontmatter.keywords && (
               <p class="paper__keywords">
                 <strong>Keywords.</strong> {frontmatter.keywords.join(", ")}
