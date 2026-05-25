@@ -13,12 +13,13 @@
       **predicate-column read-set** are both contained in the
       policy's allowed set.
 
-  Headline theorems (all `sorry`-free, see `CheckAxioms.lean` for
-  the audited axiom set):
+  Headline theorems (see `CheckAxioms.lean` for the audited
+  axiom set):
 
     `rewrite_touched`             touched relation preserved
     `rewrite_schema_subset`       output schema ⊆ input schema
     `rewrite_sound`               output columns ⊆ policy-allowed
+                                  (generalised over `touchedRels`)
     `rewrite_filter_sound`        predicate columns ⊆ policy-allowed
     `rewrite_no_new_columns`      contrapositive of schema-subset
     `rewrite_idempotent`          rewriting twice ≡ once (set-eq)
@@ -26,6 +27,14 @@
     `rewrite_refuses_unknown`     unknown relation ⇒ `none`
     `rewrite_refuses_forbidden_filter`
                                   filter on forbidden col ⇒ `none`
+    `rewrite_sound_join`          Join: σ(q') ⊆ ⋃ allowed touched(q_i)
+    `rewrite_refuses_unallowed_join_key`
+                                  Join: on ∉ allow(l)∨allow(r) ⇒ `none`
+
+  `rewrite_idempotent`, `rewrite_monotone`, and
+  `rewrite_refuses_forbidden_filter` carry a `sorryAx` on the
+  `Join` arm (the non-`Join` cases are fully proved); see §6 of
+  the paper / `CheckAxioms.lean` for the residual proof surface.
 
   The Rust prototype mirrors `Plan`, `Policy`, and `rewrite` byte-
   for-byte; `Main` (the `postern-corpus` exe) emits a JSON corpus

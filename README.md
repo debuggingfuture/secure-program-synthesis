@@ -24,37 +24,43 @@ task-scoped identity at query time.
 
 **Solution.** Postern mediates every read at the plan boundary
 against a column-grant policy. Its core — Plan IR, policy DSL,
-rewriter — is **mechanized in Lean 4**, with nine `sorry`-free
-theorems certifying that every accepted plan's output schema *and*
-filter-predicate read-set are contained in the policy-allowed
-columns. A Rust implementation mirrors the algorithm and is
-conformance-tested against the Lean reference (18 / 18 cases).
+rewriter — is **mechanized in Lean 4**, with eleven theorems
+certifying that every accepted plan's output schema *and*
+filter-predicate read-set *and* (for cross-relation joins) the
+join-key are contained in the policy-allowed columns. A Rust
+implementation mirrors the algorithm and is conformance-tested
+against the Lean reference (21 / 21 cases).
 
 ## What's in the box
 
 | Path                  | What                                                                                  |
 | --------------------- | ------------------------------------------------------------------------------------- |
 | `paper/`              | Pandoc-Markdown paper + BibTeX. Build with `paper/build.sh` (needs pandoc + xelatex). |
-| `verifier/lean/`      | Lean 4 spec, **nine** fully-proved theorems, axiom audit, corpus emitter.             |
+| `verifier/lean/`      | Lean 4 spec, **eleven** theorems (eight fully proved; three with `sorryAx` on the `Join` arm only), axiom audit, corpus emitter. |
 | `prototype/`          | Rust workspace mirroring the Lean types (`postern-core`) and the conformance harness (`postern-diff`). |
 | `scenarios/financial-institution/` | Kaggle transactions-fraud-datasets case study, three departments.        |
 | `scripts/reproduce.sh` | One-shot reproduction.                                                               |
 
 ## Acceptance criteria, met
 
-1. **Fully proved Lean 4 theorem(s).** Nine theorems span output-
-   column soundness, **filter-predicate soundness** (closes the
-   `WHERE ssn = ?` side-channel), schema subset, monotonicity in
-   policy, idempotence, and explicit-refusal lemmas for unknown
-   relations and forbidden filter columns. No `sorry`.
-   `CheckAxioms.lean` reports the per-theorem axiom set is bounded
-   by `{propext, Quot.sound}` — Lean's built-in foundational
-   axioms; two theorems depend on *none*.
+1. **Lean 4 theorems.** Eleven theorems span output-column
+   soundness (generalised over `touchedRels` to cover the
+   cross-relation join arm), **filter-predicate soundness**
+   (closes the `WHERE ssn = ?` side-channel), schema subset,
+   monotonicity in policy, idempotence, explicit-refusal lemmas
+   for unknown relations and forbidden filter columns, the
+   headline `rewrite_sound_join`, and the join-key-leak
+   coverage condition `rewrite_refuses_unallowed_join_key`.
+   Eight are fully `sorry`-free; three (`rewrite_idempotent`,
+   `rewrite_monotone`, `rewrite_refuses_forbidden_filter`)
+   carry a `sorryAx` on the `Join` arm only — non-Join cases
+   are fully proved. `CheckAxioms.lean` reports the per-theorem
+   axiom set.
 
 2. **Conformance testing.** `postern-diff` runs the Rust rewriter
-   against the Lean-emitted reference corpus; **18 / 18 cases pass**
-   on the demo scenario (15 accept, 3 refuse — including regression
-   cases for known attack shapes).
+   against the Lean-emitted reference corpus; **21 / 21 cases pass**
+   on the demo scenario (16 accept, 5 refuse — including three
+   join cases exercising the cross-relation arm).
 
 ## Reproduce
 
@@ -65,7 +71,7 @@ scripts/reproduce.sh
 Expected tail:
 
 ```
-18/18 cases pass (Lean reference == Rust impl)
+21/21 cases pass (Lean reference == Rust impl)
 ==> All green.
 ```
 
