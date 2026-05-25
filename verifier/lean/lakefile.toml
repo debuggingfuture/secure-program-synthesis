@@ -16,3 +16,7 @@ name = "CheckAxioms"
 [[lean_exe]]
 name = "postern-corpus"
 root = "Main"
+
+[[lean_exe]]
+name = "postern-datalog-corpus"
+root = "MainDatalog"
