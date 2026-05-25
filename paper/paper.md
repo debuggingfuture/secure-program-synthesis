@@ -196,7 +196,7 @@ step.
 
 Postern compiles a single policy artifact to plan-level enforcement.
 
-![Postern architecture: the agent submits an MCP plan with a biscuit token; the gateway verifies the token, extracts the principal, and applies the Lean-extracted rewriter against the policy and catalog before lowering the rewritten plan to DuckDB/Polars. The dashed box marks the trusted computing base of §2.](figures/architecture.pdf){#fig:arch width=85%}
+![Postern architecture. The agent submits a plan paired with a biscuit token. Inside the trusted base, biscuit-auth performs Ed25519 signature verification, and then the same library's Datalog evaluator (`biscuit_auth::datalog::World`) combines the token's authenticated facts with the gateway-loaded policy's `right(principal, relation, column)` rules to derive the principal's allow-set. The Lean-verified plan rewriter then projects the submitted plan against that allow-set and the catalog, emitting an `Option Plan` for DuckDB/Polars to execute. The dashed box marks the trusted computing base of §2.](figures/architecture.pdf){#fig:arch width=85%}
 
 ## Policy
 
