@@ -83,11 +83,12 @@ flowchart LR
         </p>
         <pre class="mermaid" is:raw>
 flowchart LR
-  agent[LLM agent] -->|MCP plan + biscuit| gw{{Postern gateway}}
+  agent[LLM agent] -->|plan + biscuit| gw{{Postern gateway}}
   subgraph TCB[trusted base]
-    gw -->|verify| bc[biscuit verifier]
-    bc -->|principal| rw["plan rewriter<br/>(Lean ref &harr; Rust mirror)"]
-    pol[(policy)] --> rw
+    gw -->|sig verify| bc[biscuit-auth]
+    bc -->|principal + token facts| ev[biscuit Datalog eval]
+    pol[(policy: right facts)] --> ev
+    ev -->|allow-set| rw["plan rewriter<br/>(Lean ref &harr; Rust mirror)"]
     cat[(catalog)] --> rw
     rw -->|Option Plan| exe[DuckDB / Polars]
     exe --> guard["capability-bounded sink<br/>Cap·Tagged · opaque receipt"]
