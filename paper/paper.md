@@ -255,6 +255,57 @@ not hold a capability. Rust has no capture-checking. We
 mechanise a weaker analog by composing three pure-Rust
 constructions, each closing one face of the gap.
 
+**Deployment model — what gets compiled when.** Before describing
+the mechanisms it is worth fixing what the type discipline acts
+on. Two artifacts both get loosely called "LLM-generated" in
+agentic systems and must not be confused: (i) the agent's *code*
+— the Rust source that links against `postern-guardrail` as a
+dependency — and (ii) the agent's *behaviour* per request — the
+plans and tool calls the live LLM emits. Layer 2 gates (i), not
+(ii). Per-request Rust codegen-and-compile is **not** the
+design and would be operationally infeasible; even a small crate
+takes seconds to cold-compile against any non-trivial dependency
+graph, which is well outside the interactive loop a lakehouse
+query has to fit inside. Instead, the agent crate is built ahead
+of time (by a human engineer, possibly with LLM assistance, or
+modelled as untrusted-by-design); the three `compile_fail`
+doctests of `postern-guardrail` reject the bypass attempts at
+*that* build, so the production binary cannot contain a path
+that forges a `Cap`, projects `Tagged::value`, or escapes the
+brand. Per-request variance is carried by the plans the agent
+emits at runtime — and those are gated by Layer 1's rewriter
+(§3 *Cost at the gateway*) without any code generation.
+
+The operational consequence is that **adding a new capability
+for an agent requires a build and deploy through the
+organisation's existing review pipeline**: a new sink, a new
+side-effect surface, or a new dependency goes in via PR, passes
+the type-check, gets reviewed and shipped — exactly the
+discipline already applied to any other microservice in a
+regulated environment. The design trades runtime flexibility for
+compile-time auditability; the trust anchor is the compiled
+binary, not a runtime sandbox or a hot-loaded tool registry. The
+LLM-inside-the-agent decides which sanctioned plan to issue and
+which sanctioned sink to route results into, but it cannot grow
+new arms in flight.
+
+A direct corollary is that **different departments will typically
+deploy different agents with different guardrail surfaces**, not
+share one fat binary gated by runtime policy. In the financial-
+institution scenario of §5, a `CRM` agent links against sinks
+that emit to the customer-support dashboard and segmentation
+exports; a `CardOps` agent links against the card-issuer API and
+the audit trail; a `FraudRisk` agent links against the
+fraud-ML pipeline and a compliance-audit sink. Each crate's
+dependency graph is the **policy review surface** for that
+principal — a compliance team can answer "can `FraudRisk` post
+to Slack?" by reading the agent's `Cargo.toml`, not by
+auditing a runtime configuration that drifts. The §5 column-
+grant policy and the per-agent sink curation are complementary:
+the rewriter bounds *which columns* reach a principal; the
+agent's compile-time capability surface bounds *what that
+principal's code can do* with the values it receives.
+
 **Sealed capability tokens.** `Cap<'sc, C>` carries no public
 constructor and contains a `Sealed` field whose constructor is
 private to the crate. Forging a `Cap` is therefore a privacy
