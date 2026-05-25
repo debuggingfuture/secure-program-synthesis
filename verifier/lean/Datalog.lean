@@ -764,7 +764,26 @@ theorem eval_monotone
 
 /-- `eval_sound`: every atom in `eval P` is either a starting fact
     of `P` or the grounded head of some rule of `P` whose grounded
-    body is contained in `eval P`. Stated; proof tracked separately. -/
+    body is contained in `eval P`.
+
+    Proof strategy (residual `sorry`, A2): induct on the iteration
+    count `n` such that `a ∈ iterate P.rules P.facts n`. At `n = 0`,
+    `a ∈ P.facts` directly. At `n + 1`, `a ∈ step P.rules (iterate _ n)`
+    so either `a ∈ iterate _ n` (apply IH; the rule-firing witness
+    lifts to `eval P` via `iterate_subset_le`), or `a` is the grounded
+    head of some `r ∈ P.rules` under a substitution `s` produced by
+    `allMatches (iterate _ n) [] r.body`. The remaining obligation
+    is an `allMatches` grounding lemma:
+
+      s ∈ allMatches F s₀ body
+        → ∀ b ∈ body, ∃ f ∈ F, Atom.applySubst s b = some f
+
+    which establishes that the body's grounded atoms live in `F`
+    (and hence in `eval P` by monotonicity). The
+    rule-free specialisation `eval_no_rules` discharges this case
+    unconditionally for the motivating examples (the financial-
+    institution scenario uses ground `right(_,_,_)` facts and no
+    rules). -/
 theorem eval_sound
     (P : Program) (a : Atom) (h : a ∈ eval P) :
     a ∈ P.facts ∨
@@ -773,13 +792,71 @@ theorem eval_sound
       ∀ b ∈ r.body, (Atom.applySubst s b).getD a ∈ eval P := by
   sorry
 
-/-- `eval_terminates`: iterating `step` past the Herbrand bound
-    adds nothing. Stated; full proof is the Knaster–Tarski-style
-    cardinality argument tracked separately. -/
+/-- Auxiliary: if `step` is mem-stable at depth `n` (it adds no new
+    facts), then iteration is mem-stable from `n` onward. This is the
+    saturation half of `eval_terminates` reduced to its actual content
+    — no Herbrand-base counting needed for this lemma, only induction
+    on `k`. -/
+theorem iterate_stable_of_step_stable
+    (R : List Rule) (F : List Atom) (n : Nat)
+    (h_stable : ∀ a, a ∈ step R (iterate R F n) → a ∈ iterate R F n) :
+    ∀ (k : Nat) (a : Atom),
+      a ∈ iterate R F (n + k) ↔ a ∈ iterate R F n := by
+  intro k
+  induction k with
+  | zero =>
+      intro a
+      show a ∈ iterate R F n ↔ a ∈ iterate R F n
+      exact Iff.rfl
+  | succ k ih =>
+      intro a
+      -- iterate R F (n + (k+1)) = step R (iterate R F (n+k))
+      show a ∈ step R (iterate R F (n+k)) ↔ a ∈ iterate R F n
+      constructor
+      · -- a ∈ step R (iterate R F (n+k))
+        --   → mem-set ⊆ mem-set of step R (iterate R F n)  (by step_subset_facts + ih)
+        --   → a ∈ iterate R F n  (by h_stable)
+        intro h
+        have hsub : ∀ b, b ∈ iterate R F (n+k) → b ∈ iterate R F n := by
+          intro b hb
+          exact (ih b).mp hb
+        have h' : a ∈ step R (iterate R F n) :=
+          step_subset_facts R (iterate R F (n+k)) (iterate R F n) hsub a h
+        exact h_stable a h'
+      · -- a ∈ iterate R F n → a ∈ iterate R F (n+k) (by ih ←) → a ∈ step R (...) (by step_extensive)
+        intro h
+        have h' : a ∈ iterate R F (n+k) := (ih a).mpr h
+        exact step_extensive R _ a h'
+
+/-- `eval_terminates` (membership-stable form): once iteration reaches
+    the Herbrand bound, no new ground atoms appear in subsequent
+    iterations. The mem-set equality is what downstream proofs need;
+    the literal list equality is *false* because `step` always
+    appends `rules.flatMap …` even when all heads are duplicates of
+    existing facts.
+
+    The forward direction is `iterate_subset_le`. The reverse
+    direction (saturation) is the standard Herbrand-base
+    pigeonhole argument: the mem-set is a monotone subset of a
+    universe of size `≤ herbrandBound`, so it must stabilise by
+    iteration `herbrandBound`. Reducing this to
+    `iterate_stable_of_step_stable` requires showing step-stability
+    at depth `herbrandBound`, which needs a finite-Herbrand-base
+    lemma not yet derived from scratch. Tracked as the residual
+    `sorry` for A3. -/
 theorem eval_terminates
-    (P : Program) (k : Nat) :
-    iterate P.rules P.facts (P.herbrandBound + k)
-      = iterate P.rules P.facts P.herbrandBound := by
-  sorry
+    (P : Program) (k : Nat) (a : Atom) :
+    a ∈ iterate P.rules P.facts (P.herbrandBound + k) ↔
+    a ∈ iterate P.rules P.facts P.herbrandBound := by
+  constructor
+  · -- Forward (saturation): needs the Herbrand pigeonhole.
+    -- See iterate_stable_of_step_stable above for the reduction;
+    -- the missing ingredient is step-stability at depth herbrandBound,
+    -- which in turn needs a Herbrand-base finiteness argument.
+    sorry
+  · -- Reverse (extension): immediate from `iterate_subset_le`.
+    intro h
+    have hle : P.herbrandBound ≤ P.herbrandBound + k := Nat.le_add_right _ _
+    exact iterate_subset_le P.rules P.facts hle a h
 
 end Postern.Datalog

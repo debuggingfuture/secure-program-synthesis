@@ -44,6 +44,9 @@ import Datalog
       'length_eraseDups_le_of_subset'         depends on [propext, Quot.sound]
       'maxArity_mono'                         depends on [propext, Quot.sound]
 
+    Saturation helper for `eval_terminates` (Datalog.lean — proved):
+      'iterate_stable_of_step_stable'         depends on [propext, Quot.sound]
+
     These four cover the motivating-examples regime (financial-
     institution scenario uses ground `right(_,_,_)` facts only,
     no derivation rules). For that regime `eval P` is mem-set-
@@ -61,7 +64,17 @@ import Datalog
       'eval_sound'           depends on [propext, sorryAx]
                              -- iteration-trace induction; tracked in §6 follow-up.
       'eval_terminates'      depends on [propext, sorryAx]
-                             -- Herbrand-base saturation argument; §6 follow-up.
+                             -- Statement *corrected* to membership form
+                             -- (the previous list-equality form was
+                             -- literally false because `step` appends
+                             -- duplicate rule heads). One direction
+                             -- (extension via `iterate_subset_le`) is
+                             -- proved; the saturation direction is the
+                             -- residual sorry. The auxiliary
+                             -- `iterate_stable_of_step_stable` reduces
+                             -- it to step-stability at the Herbrand
+                             -- depth, which still needs the finite-
+                             -- Herbrand-base pigeonhole argument.
 
   `propext` and `Quot.sound` are foundational Lean axioms (the
   third is `Classical.choice`, which we avoid). `sorry` lines are
@@ -101,6 +114,8 @@ import Datalog
 #print axioms Postern.Datalog.length_le_eraseDups_of_nodup_subset
 #print axioms Postern.Datalog.length_eraseDups_le_of_subset
 #print axioms Postern.Datalog.maxArity_mono
+-- Saturation helper underpinning the reverse direction of eval_terminates.
+#print axioms Postern.Datalog.iterate_stable_of_step_stable
 -- Headline theorems (open obligations isolated as `sorryAx`).
 #print axioms Postern.Datalog.eval_monotone
 #print axioms Postern.Datalog.herbrandBound_mono
