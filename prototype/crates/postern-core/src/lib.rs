@@ -106,6 +106,18 @@ pub enum Plan {
         /// Column the predicate reads.
         col: Column,
     },
+    /// Equi-join of `left` and `right` on a shared column `on`.
+    /// Output schema is `left.schema ++ right.schema`; the rewriter
+    /// refuses if `on` is not policy-allowed on *both* legs (closes
+    /// the join-key leak — see Lean `rewrite_refuses_unallowed_join_key`).
+    Join {
+        /// Left leg.
+        left: Box<Plan>,
+        /// Right leg.
+        right: Box<Plan>,
+        /// Join key (shared column).
+        on: Column,
+    },
 }
 
 impl Plan {
@@ -133,20 +145,50 @@ impl Plan {
         }
     }
 
-    /// `Plan.touched` — every operator preserves the touched
-    /// relation because single-relation plans are the only IR we
-    /// model.
+    /// Smart constructor for `Join`.
+    #[must_use]
+    pub fn join(left: Plan, right: Plan, on: impl Into<Column>) -> Self {
+        Plan::Join {
+            left: Box::new(left),
+            right: Box::new(right),
+            on: on.into(),
+        }
+    }
+
+    /// `Plan.touched` — the single relation a plan reads from. For
+    /// `Join`, by convention this is the left leg's touched relation;
+    /// `touched_rels()` reports the multi-relation view used by
+    /// `rewrite_sound_join` on the Lean side.
     #[must_use]
     pub fn touched(&self) -> &Relation {
         match self {
             Plan::Scan { rel } => rel,
             Plan::Project { sub, .. } | Plan::Filter { sub, .. } => sub.touched(),
+            Plan::Join { left, .. } => left.touched(),
+        }
+    }
+
+    /// `Plan.touchedRels` — the multi-relation view (singleton for
+    /// non-`Join`, concatenated legs for `Join`). Used by the
+    /// generalised soundness statement.
+    #[must_use]
+    pub fn touched_rels(&self) -> Vec<Relation> {
+        match self {
+            Plan::Scan { rel } => vec![rel.clone()],
+            Plan::Project { sub, .. } | Plan::Filter { sub, .. } => sub.touched_rels(),
+            Plan::Join { left, right, .. } => {
+                let mut out = left.touched_rels();
+                out.extend(right.touched_rels());
+                out
+            }
         }
     }
 
     /// `Plan.schema` — same shape as Lean's. `Project` intersects
     /// with the listed columns (preserving sub-plan order);
-    /// `Filter` is row-only.
+    /// `Filter` is row-only; `Join` concatenates left- then-right
+    /// sub-schemas (caller must disambiguate column-name collisions
+    /// upstream).
     #[must_use]
     pub fn schema(&self, cat: &Catalog) -> Vec<Column> {
         match self {
@@ -157,13 +199,21 @@ impl Plan {
                 .filter(|c| cols.contains(c))
                 .collect(),
             Plan::Filter { sub, .. } => sub.schema(cat),
+            Plan::Join { left, right, .. } => {
+                let mut out = left.schema(cat);
+                out.extend(right.schema(cat));
+                out
+            }
         }
     }
 
     /// `Plan.filterCols` — read-set of every `Filter` predicate in
     /// the plan, distinct from the output schema. Closes the
     /// side-channel where a forbidden column could be a row
-    /// predicate without ever appearing in the output.
+    /// predicate without ever appearing in the output. For `Join`,
+    /// concatenates both legs' filter columns. The join key itself
+    /// is *not* a Filter read in this sense — the join-key leak is
+    /// its own coverage condition (`Lean rewrite_refuses_unallowed_join_key`).
     #[must_use]
     pub fn filter_cols(&self) -> Vec<Column> {
         let mut out = Vec::new();
@@ -178,6 +228,10 @@ impl Plan {
             Plan::Filter { sub, col } => {
                 acc.push(col.clone());
                 sub.collect_filter_cols(acc);
+            }
+            Plan::Join { left, right, .. } => {
+                left.collect_filter_cols(acc);
+                right.collect_filter_cols(acc);
             }
         }
     }
@@ -252,14 +306,43 @@ impl Policy {
 /// `rewrite` — Rust mirror of `Postern.rewrite : Catalog → Policy →
 /// Principal → Plan → Option Plan`.
 ///
-/// Returns `None` (refusal) when:
-///   1. `cat.columns(plan.touched())` is empty — unknown relation; or
+/// Refusal conditions:
+///   1. `cat.columns(plan.touched())` is empty — unknown relation.
 ///   2. any column read by a `Filter` predicate is not in the
 ///      principal's allowed set on the touched relation.
+///   3. `Join`: either leg refuses; or the join key is not in the
+///      principal's allowed set on *both* legs' touched relations
+///      (closes the join-key leak — Lean
+///      `rewrite_refuses_unallowed_join_key`).
 ///
-/// Otherwise returns `Some(Plan::Project { sub: plan, cols })` where
-/// `cols = plan.schema(cat) ∩ policy.allowed(prin, plan.touched())`.
+/// On accept:
+///   - Non-`Join` plans wrap in `Plan::Project` with
+///     `cols = plan.schema(cat) ∩ policy.allowed(prin, plan.touched())`.
+///   - `Join` plans compose per-leg rewrites under a `Plan::Join`
+///     wrapper; the per-leg `Project` wrappers handle column
+///     projection, mirroring the Lean rewriter.
 pub fn rewrite(cat: &Catalog, pol: &Policy, prin: &str, plan: &Plan) -> Option<Plan> {
+    if let Plan::Join { left, right, on } = plan {
+        let l_rewritten = rewrite(cat, pol, prin, left)?;
+        let r_rewritten = rewrite(cat, pol, prin, right)?;
+        let allow_l = pol.allowed(prin, left.touched());
+        let allow_r = pol.allowed(prin, right.touched());
+        if !allow_l.contains(on) || !allow_r.contains(on) {
+            return None;
+        }
+        return Some(Plan::Join {
+            left: Box::new(l_rewritten),
+            right: Box::new(r_rewritten),
+            on: on.clone(),
+        });
+    }
+    rewrite_leaf(cat, pol, prin, plan)
+}
+
+/// Single-relation rewriter body — mirrors `Postern.rewriteLeaf` on
+/// the Lean side. Called by `rewrite` for `.scan / .project / .filter`
+/// inputs; the `Join` arm is handled inline.
+fn rewrite_leaf(cat: &Catalog, pol: &Policy, prin: &str, plan: &Plan) -> Option<Plan> {
     let touched = plan.touched();
     let cat_cols = cat.columns(touched);
     if cat_cols.is_empty() {
@@ -413,6 +496,60 @@ mod tests {
         )
         .expect("accept");
         assert!(rw.schema(&demo_catalog()).is_empty());
+    }
+
+    #[test]
+    fn join_legal_key_accepts() {
+        // CRM joins users_data with itself on `id` (a column CRM is allowed to read
+        // on both legs — degenerate but valid). Output schema = legs' schemas
+        // concatenated, each projected to CRM's allow.
+        let cat = demo_catalog();
+        let pol = demo_policy();
+        let plan = Plan::join(Plan::scan("users_data"), Plan::scan("users_data"), "id");
+        let rw = rewrite(&cat, &pol, "CRM", &plan).expect("accept");
+        // The result is Join(Project(scan, ...), Project(scan, ...), id).
+        match &rw {
+            Plan::Join { left, right, on } => {
+                assert_eq!(on, "id");
+                assert!(matches!(left.as_ref(), Plan::Project { .. }));
+                assert!(matches!(right.as_ref(), Plan::Project { .. }));
+            }
+            _ => panic!("join output must be a Plan::Join"),
+        }
+        let schema = rw.schema(&cat);
+        assert_eq!(
+            schema,
+            vec![
+                "id", "name", "region", "age", // left leg
+                "id", "name", "region", "age", // right leg (CRM has same allow on users_data)
+            ]
+        );
+    }
+
+    #[test]
+    fn join_forbidden_key_refused() {
+        // CRM tries to join users_data with itself on `ssn` — a column CRM is NOT
+        // allowed to read. This is the join-key leak: refused.
+        let cat = demo_catalog();
+        let pol = demo_policy();
+        let plan = Plan::join(Plan::scan("users_data"), Plan::scan("users_data"), "ssn");
+        let rw = rewrite(&cat, &pol, "CRM", &plan);
+        assert!(rw.is_none(), "join on forbidden column must refuse");
+    }
+
+    #[test]
+    fn join_with_refusing_leg_refused() {
+        // CRM joins users_data ⋈ unknown_relation — right leg's scan refuses
+        // (unknown relation), so the whole join refuses.
+        let cat = demo_catalog();
+        let pol = demo_policy();
+        let plan = Plan::join(
+            Plan::scan("users_data"),
+            Plan::scan("credit_bureau_imports"),
+            "id",
+        );
+        let rw = rewrite(&cat, &pol, "CRM", &plan);
+        assert!(rw.is_none(), "join with refusing leg must refuse");
     }
 
     #[test]

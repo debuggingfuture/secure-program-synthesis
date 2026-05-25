@@ -26,7 +26,7 @@ abstract: |
   Odersky et al. [@capabilities-agents-2026] — invariant brand
   lifetimes, sealed types, opaque-receipt sinks; and (iii) a
   reference-conformance harness binding Rust to the Lean
-  reference on 18 cases. We evaluate on the Kaggle
+  reference on 21 cases. We evaluate on the Kaggle
   `transactions-fraud-datasets` schema and identify Biscuit
   attenuation, audience, expiry, key rotation, cross-relation
   joins, and differentially-private aggregation as the principal
@@ -128,8 +128,9 @@ harness binding the two.
    structurally mirroring the Lean reference, and a
    reference-conformance harness (`postern-diff`) that asserts
    byte-equivalence between the Rust output and the Lean
-   reference on a corpus of 18 hand-curated cases (15 accept, 3
-   refusal). The gateway's Datalog evaluation surface is
+   reference on a corpus of 21 hand-curated cases (16 accept, 5
+   refusal — including three cases exercising the cross-relation
+   join arm). The gateway's Datalog evaluation surface is
    implemented directly against `biscuit-auth`'s public
    `biscuit_auth::datalog::World` evaluator [@biscuit] in
    `postern-core::datalog`, and is exercised by a *second*
@@ -548,12 +549,43 @@ projecting $\mathit{right}$ atoms out of `eval P`), removing the
 Horn-fragment policy language the gateway dispatches through
 (§5 *Datalog backend*).
 
+**Theorem 11 (cross-relation join soundness, `rewrite_sound_join`).**
+The Plan IR is extended with a binary equi-join constructor
+$\mathit{Join}(q_1, q_2, \mathit{on})$, modelling a single shared
+join key. The headline soundness on the join arm of the rewriter
+is
+$$
+  \sigma(\mathit{rewrite}(\mathit{Join}(q_1, q_2, \mathit{on})))
+  \subseteq P.\mathit{allowed}\ p\ \mathit{touched}(q_1)
+          \cup P.\mathit{allowed}\ p\ \mathit{touched}(q_2),
+$$
+the union form conjectured in the previous draft's §6. The proof
+is a corollary of the generalised single-relation soundness
+$\sigma(\mathit{rewrite}(q)) \subseteq
+P.\mathit{allowedRels}\ p\ \mathit{touchedRels}(q)$, which lifts
+$\mathit{touched}$ to the multi-relation $\mathit{touchedRels}$
+(a singleton for non-$\mathit{Join}$ plans, concatenated legs for
+$\mathit{Join}$). The companion theorem
+`rewrite_refuses_unallowed_join_key` discharges the
+*join-key leak* coverage condition: if
+$\mathit{on} \notin P.\mathit{allowed}\ p\ \mathit{touched}(q_1)$
+or $\mathit{on} \notin P.\mathit{allowed}\ p\ \mathit{touched}(q_2)$
+then $\mathit{rewrite}(\mathit{Join}(q_1, q_2, \mathit{on})) =
+\mathit{none}$. This rules out the side-channel in which an agent
+joining on a column $c$ it cannot read learns $c$'s value
+distribution through the join's row-correlation, even if $c$ is
+dropped from the final projection — the analogue at the join arm
+of Theorem 9's filter side-channel.
+
 `CheckAxioms.lean` audits the axiom dependencies of each theorem.
-For the rewriter side (Theorems 1–10) the set is bounded by
-$\{\texttt{propext}, \texttt{Quot.sound}\}$, Lean~4's
-foundational axioms; the proofs of `rewrite_touched` and
-`rewrite_refuses_unknown` depend on no axioms, and no proof
-uses `sorry`.
+For Theorems 1, 2, 3, 4, 7, 8, 10, 11 the set is bounded by
+$\{\texttt{propext}, \texttt{Quot.sound}\}$, Lean~4's foundational
+axioms, with no `sorry`. Theorems 5, 6, and 9 are fully proved on
+the non-$\mathit{Join}$ arm; the $\mathit{Join}$-arm composition
+(per-leg idempotence into Join-idempotence; widening through a
+two-leg key check; cross-leg forbidden filter) is isolated as
+$\texttt{sorryAx}$ in the audit and listed in §6 as the residual
+proof surface.
 
 **Datalog evaluator (`verifier/lean/Datalog.lean`).** The policy
 language is mechanised independently. Eight supporting
@@ -634,18 +666,21 @@ mem-set is the semantics, since `step` is `flatMap`-based and
 does not dedup), while biscuit's `FactSet` is a `HashSet<Fact>`
 per origin and dedups on insertion. All nine cases pass.
 
-The corpus comprises 18 cases (15 accept, 3 refuse):
+The corpus comprises 21 cases (16 accept, 5 refuse):
 seven behavioural cases drawn from the financial-institution
-scenario of §5; three refusal regressions for known attack shapes
-(filter-on-forbidden-column, unknown-relation, one nested
-forbidden-filter variant); two acceptance regressions for the
-empty-projection collapse cases (unknown-principal collapses to
-empty schema; over-projection of forbidden columns drops to
-empty); and six policy-language edge cases (duplicate grants,
+scenario of §5; three refusal regressions for known leaf-rewriter
+attack shapes (filter-on-forbidden-column, unknown-relation, one
+nested forbidden-filter variant); two acceptance regressions for
+the empty-projection collapse cases (unknown-principal collapses
+to empty schema; over-projection of forbidden columns drops to
+empty); six policy-language edge cases (duplicate grants,
 catalog-absent columns, case-sensitive principal, trailing-
 whitespace principal, nonexistent project column, nested
-$\mathit{Project}$ narrowing). All eighteen pass on the current
-Rust implementation.
+$\mathit{Project}$ narrowing); and three cross-relation join
+cases exercising the $\mathit{Join}$ arm — one accept (legal key
+on a shared allowed column), one refusal under join-key leak
+(forbidden key), and one refusal under a refusing right leg. All
+21 pass on the current Rust implementation.
 
 # Evaluation: a financial institution with three principals
 
@@ -781,20 +816,23 @@ mutual information about a forbidden one to warrant blocking —
 the same problem space as the differential-privacy boundary
 below.
 
-*Cross-relation joins.* The Plan IR is single-relation. The
-Rust implementation handles joins by per-leg rewriting but the
-composition is not under proof. The conjecture is a theorem of
-the form
-$$
-  \mathit{rewrite\_sound\_join} :
-  \mathit{accept}(q_1) \wedge \mathit{accept}(q_2) \implies
-  \sigma(\mathit{rewrite}(\mathit{Join}(q_1, q_2))) \subseteq
-  \bigcup_i P.\mathit{allowed}\ p\ \mathit{touched}(q_i)
-$$
-on a Plan IR extended with a $\mathit{Join}$ constructor. The
-join-key leak — joining on a column $c$ without projecting it,
-which leaks $c$'s value distribution — mirrors the filter
-side-channel and admits the analogous coverage condition.
+*Cross-relation joins (residual obligations).* The Plan IR has
+been extended with a binary $\mathit{Join}(q_1, q_2,
+\mathit{on})$ constructor (§4 Theorem 11). The output-column
+soundness and the join-key leak coverage condition are both
+mechanised. Three residual obligations on the $\mathit{Join}$
+arm are tracked as $\texttt{sorryAx}$ in `CheckAxioms.lean` and
+remain open: (i) chaining per-leg idempotence into Join
+idempotence (Theorem 5); (ii) lifting policy-widening through
+the join's two-leg key membership check (Theorem 6); and (iii)
+the cross-leg forbidden-filter refusal (Theorem 9), which under
+the current statement only refuses cleanly when the forbidden
+filter sits in the left leg — generalising it to either leg
+requires a leg-dispatch on $\mathit{filterCols}(q_1) \cup
+\mathit{filterCols}(q_2)$. Multi-key joins and theta-joins
+desugar into $(\mathit{Join} \circ \mathit{Filter})$
+compositions and so reduce to the binary case; an inductive
+generalisation to $n$-ary equi-joins is straightforward.
 
 *Aggregation with a differential-privacy boundary.* A
 principal may be permitted to read $\mathrm{SUM}(\mathit{amount})$
@@ -839,13 +877,15 @@ scripts/reproduce.sh
 ```
 
 Expected output ends with
-`18/18 cases pass (Lean reference == Rust impl)` for the
+`21/21 cases pass (Lean reference == Rust impl)` for the
 rewriter corpus AND `9/9 datalog cases pass (Lean Datalog
 reference == biscuit_auth::datalog::World)` for the Datalog
-corpus, plus an axiom audit showing only `propext` and
-`Quot.sound` (with `sorryAx` isolated to the two named open
-obligations `eval_sound` and `eval_terminates`, both tracked
-under §6). With `wasm-pack` present, the last step also emits
+corpus, plus an axiom audit bounded by `propext` and
+`Quot.sound` for the fully-proved theorems; `sorryAx` is
+isolated to two Datalog residuals (`eval_sound`,
+`eval_terminates`) and three $\mathit{Join}$-arm obligations
+of Theorems 5, 6, 9, all listed in §6. With
+`wasm-pack` present, the last step also emits
 `postern_wasm_bg.wasm` into `web/src/wasm/`. We do not quote a
 wall-clock budget — `time scripts/reproduce.sh` on the reader's
 hardware is the only honest measurement, and the dominant cost
