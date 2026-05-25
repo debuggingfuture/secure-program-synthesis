@@ -129,12 +129,14 @@ harness binding the two.
    reference-conformance harness (`postern-diff`) that asserts
    byte-equivalence between the Rust output and the Lean
    reference on a corpus of 18 hand-curated cases (15 accept, 3
-   refusal). The gateway's Datalog evaluation surface is designed
-   around `biscuit-auth`'s public `biscuit_auth::datalog::World`
-   evaluator [@biscuit]; the in-tree `postern-core` migration to
-   that backend is in progress, with the column-grant DSL serving
-   as the byte-equivalent stand-in until the migration lands.
-   We label the procedure *reference-conformance testing* rather
+   refusal). The gateway's Datalog evaluation surface is
+   implemented directly against `biscuit-auth`'s public
+   `biscuit_auth::datalog::World` evaluator [@biscuit] in
+   `postern-core::datalog`, and is exercised by a *second*
+   conformance corpus (`postern-datalog-corpus`, 9 cases)
+   asserting mem-set equality between Lean's `Program.allowed`
+   and the Rust-side `allowed` against the same `World`. We
+   label the procedure *reference-conformance testing* rather
    than QuickCheck-style differential testing, reserving the
    latter term for property-based generation; the latter is
    among the open problems of §6.
@@ -599,18 +601,38 @@ on the grounds that the corpus interface is stable across
 compiler-version churn in both languages and that divergence
 manifests as a CI failure rather than a build failure.
 
-**Datalog backend.** The gateway is designed to evaluate
+**Datalog backend.** The gateway evaluates Horn-fragment Datalog
 policies through `biscuit-auth`'s public `biscuit_auth::datalog`
-module — `World::new()`, `add_fact`, `add_rule`, `run`,
-`query_match` — which is the same evaluator used inside the
+module — `World::new`, `add_fact`, `add_rule`,
+`run_with_limits`, plus direct iteration over the resulting
+`FactSet` — which is the same evaluator used inside the
 production token-verification surface, only without the
 token-handling layers we put out of scope (§6). The in-tree
-`postern-core` migration to this backend is in progress; the
-column-grant DSL serves as a byte-equivalent stand-in until the
-migration lands. A second conformance corpus, exercising Lean
-`eval` against `biscuit_auth::datalog::World` directly, is the
-natural pair for the rewriter corpus and is queued as the next
-work item.
+implementation lives in `postern-core::datalog`: a Rust mirror
+of the `Datalog.lean` types (`Term`, `Atom`, `Rule`, `Program`)
+plus a function `allowed(program, principal, relation) ->
+Vec<String>` whose shape matches Lean's `Program.allowed`.
+Compilation is direct — each ground fact becomes a
+`biscuit_auth::datalog::Fact` over a shared `SymbolTable`, each
+rule becomes a `Rule`, and the world is run to saturation
+before we enumerate `right(principal, relation, _)` atoms. The
+column-grant `Policy` DSL remains in `postern-core` unchanged
+and continues to back the rewriter, with the rewriter corpus
+still asserting Rust-side `Policy::allowed` matches the Lean
+reference byte-for-byte.
+
+A second conformance corpus, `postern-datalog-corpus.json` (9
+cases — three accept on the financial-institution ground-fact
+scenario, two refusal, three rule-driven LFP cases on a
+`member(P,G) ∧ grant(G,R,C) → right(P,R,C)` program, and one
+larger 36-fact program), exercises Lean's `Program.allowed`
+against `biscuit_auth::datalog::World` directly. The runner
+(`postern-datalog-diff`) asserts mem-set equality on the
+derived column list — Lean's `eval P` is defined as a
+multiset-valued `iterate` trace (the spec is explicit that the
+mem-set is the semantics, since `step` is `flatMap`-based and
+does not dedup), while biscuit's `FactSet` is a `HashSet<Fact>`
+per origin and dedups on insertion. All nine cases pass.
 
 The corpus comprises 18 cases (15 accept, 3 refuse):
 seven behavioural cases drawn from the financial-institution
@@ -795,9 +817,10 @@ integrity in transit.
 # Reproducibility
 
 ```
-verifier/lean/   Lean 4 spec + theorems + corpus emitter
+verifier/lean/   Lean 4 spec + theorems + corpus emitters
 prototype/       Rust workspace: postern-core, postern-diff,
-                 postern-guardrail, postern-wasm
+                 postern-datalog-diff, postern-guardrail,
+                 postern-wasm
 scenarios/       Financial-institution case study
 web/             Astro site with /paper, /slides, /demo
 paper/           This document + figures + build.sh
@@ -815,9 +838,14 @@ it). Single command:
 scripts/reproduce.sh
 ```
 
-Expected output ends with `18/18 cases pass (Lean reference ==
-Rust impl)` and an axiom audit showing only `propext` and
-`Quot.sound`. With `wasm-pack` present, the last step emits
+Expected output ends with
+`18/18 cases pass (Lean reference == Rust impl)` for the
+rewriter corpus AND `9/9 datalog cases pass (Lean Datalog
+reference == biscuit_auth::datalog::World)` for the Datalog
+corpus, plus an axiom audit showing only `propext` and
+`Quot.sound` (with `sorryAx` isolated to the two named open
+obligations `eval_sound` and `eval_terminates`, both tracked
+under §6). With `wasm-pack` present, the last step also emits
 `postern_wasm_bg.wasm` into `web/src/wasm/`. We do not quote a
 wall-clock budget — `time scripts/reproduce.sh` on the reader's
 hardware is the only honest measurement, and the dominant cost
