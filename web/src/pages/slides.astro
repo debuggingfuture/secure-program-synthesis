@@ -86,7 +86,7 @@ flowchart LR
   agent[LLM agent] -->|plan + biscuit| gw{{Postern gateway}}
   subgraph TCB[trusted base]
     gw -->|sig verify| bc[biscuit-auth]
-    bc -->|principal + token facts| ev[biscuit Datalog eval]
+    bc -->|principal + token facts| ev["biscuit Datalog eval<br/>(planned)"]
     pol[(policy: right facts)] --> ev
     ev -->|allow-set| rw["plan rewriter<br/>(Lean ref &harr; Rust mirror)"]
     cat[(catalog)] --> rw

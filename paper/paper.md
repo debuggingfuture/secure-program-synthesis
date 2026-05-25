@@ -207,7 +207,7 @@ step.
 
 Postern compiles a single policy artifact to plan-level enforcement.
 
-![Postern architecture. The agent submits a plan paired with a biscuit token. Inside the trusted base, biscuit-auth performs Ed25519 signature verification, and then the same library's Datalog evaluator (`biscuit_auth::datalog::World`) combines the token's authenticated facts with the gateway-loaded policy's `right(principal, relation, column)` rules to derive the principal's allow-set. The Lean-verified plan rewriter then projects the submitted plan against that allow-set and the catalog, emitting an `Option Plan` for DuckDB/Polars to execute. The dashed box marks the trusted computing base of §2.](figures/architecture.pdf){#fig:arch width=85%}
+![Postern architecture. The agent submits a plan paired with a biscuit token. Inside the trusted base, biscuit-auth performs Ed25519 signature verification, and then the same library's Datalog evaluator (`biscuit_auth::datalog::World`) combines the token's authenticated facts with the gateway-loaded policy's `right(principal, relation, column)` rules to derive the principal's allow-set. The Lean-verified plan rewriter then projects the submitted plan against that allow-set and the catalog, emitting an `Option Plan` for DuckDB/Polars to execute. The dashed box marks the trusted computing base of §2. The "biscuit Datalog eval" node is labelled *planned*: `postern-diff` today calls `postern_core::rewrite` directly against a column-grant `Policy`, and the second conformance corpus exercising `biscuit_auth::datalog::World` is the queued follow-up (§5).](figures/architecture.pdf){#fig:arch width=85%}
 
 ## Policy
 
@@ -674,6 +674,26 @@ mutual information about a forbidden one to warrant blocking —
 the same problem space as the differential-privacy boundary
 below.
 
+*Bridging `Policy.allowed` and `Program.allowed`.*
+`verifier/lean/Postern.lean` and `verifier/lean/Datalog.lean`
+today coexist without import: the rewriter consults
+`Policy.allowed prin rel : List Column` (a `flatMap` over
+`Grant.columns`), and the evaluator separately defines
+`Program.allowed prin rel : List Symbol` (a `filterMap` over
+ground `right`-atoms in `eval`). The natural bridge — a
+constructor `Policy.toProgram : Policy → Program` together with
+the theorem
+$$
+  \mathit{bridge\_allowed} :
+  P.\mathit{allowed}\ p\ r =
+  (P.\mathit{toProgram}).\mathit{allowed}\ p\ r
+$$
+— is unstated. Closing it lifts the §4 rewriter theorems through
+the Datalog evaluator, removing the "as-if Datalog" gap between
+the surface column-grant DSL and the Horn-fragment policy
+language that the gateway is designed to dispatch through (§5
+*Datalog backend*).
+
 *Cross-relation joins.* The Plan IR is single-relation. The
 Rust implementation handles joins by per-leg rewriting but the
 composition is not under proof. The conjecture is a theorem of
@@ -733,7 +753,11 @@ scripts/reproduce.sh
 Expected output ends with `18/18 cases pass (Lean reference ==
 Rust impl)` and an axiom audit showing only `propext` and
 `Quot.sound`. With `wasm-pack` present, the last step emits
-`postern_wasm_bg.wasm` into `web/src/wasm/`.
+`postern_wasm_bg.wasm` into `web/src/wasm/`. We do not quote a
+wall-clock budget — `time scripts/reproduce.sh` on the reader's
+hardware is the only honest measurement, and the dominant cost
+is the Lake fetch on a cold cache (Mathlib pull) rather than the
+proofs themselves.
 
 # References
 
