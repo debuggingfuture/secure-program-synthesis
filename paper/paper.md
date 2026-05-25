@@ -93,13 +93,21 @@ harness binding the two.
    monotonicity in the policy, touched-relation preservation,
    and explicit-refusal lemmas for unknown relations and for
    filter predicates over forbidden columns (§4). The Datalog evaluator
-   (`verifier/lean/Datalog.lean`) contributes a further
-   `eval_monotone` theorem (proved modulo one isolated combinatorial
-   obligation, `herbrandBound_mono`) plus four `sorry`-free
-   specialisation lemmas covering the rule-free regime that all
-   our scenarios use today. Two further evaluator meta-theorems —
-   `eval_sound` and `eval_terminates` — are stated with
-   `sorryAx` obligations named explicitly in `CheckAxioms.lean`.
+   (`verifier/lean/Datalog.lean`) contributes a fully proved
+   `eval_monotone` theorem — the underlying combinatorial obligation
+   `herbrandBound_mono` is now discharged from `Init` stdlib
+   primitives (no Mathlib) via three derived helpers
+   (`nodup_eraseDups`, `length_le_eraseDups_of_nodup_subset`,
+   `maxArity_mono`). Four `sorry`-free
+   specialisation lemmas cover the rule-free regime that all
+   our scenarios use today. Two further evaluator meta-theorems
+   remain residual: `eval_sound` is stated with a `sorryAx`
+   obligation, and `eval_terminates` is stated in its
+   membership-stable form (with the reverse direction proved and
+   the saturation direction reduced via the auxiliary
+   `iterate_stable_of_step_stable` to a finite-Herbrand-base
+   pigeonhole that is the remaining `sorry`). Both residuals are
+   named explicitly in `CheckAxioms.lean`.
    Axiom dependencies for proved declarations are bounded by
    `propext` and `Quot.sound`; two rewriter theorems depend on
    none.
@@ -538,14 +546,24 @@ specialisation lemmas (`step_no_rules`, `iterate_no_rules`,
 `eval_no_rules`, `eval_fact_mem`) cover the rule-free regime
 the financial-institution scenario uses today; they give an
 unconditional soundness direction for ground-fact policies and
-depend only on `propext`. The headline `eval_monotone` is
-proved modulo one isolated combinatorial obligation,
+depend only on `propext`. The headline `eval_monotone` is now
+fully proved: the previously open combinatorial obligation
 `herbrandBound_mono` (a length-after-`eraseDups` arithmetic
-argument with no semantic content). Two further meta-theorems,
-`eval_sound` and `eval_terminates`, are stated with `sorryAx`
-obligations named explicitly in the audit so the residual proof
-surface is visible at CI time. The corresponding open problems
-are listed in §6.
+argument with no semantic content) is discharged from `Init`
+stdlib primitives via three helpers (`nodup_eraseDups`,
+`length_le_eraseDups_of_nodup_subset`, `maxArity_mono`). Two
+further meta-theorems remain residual. `eval_sound` is stated
+with a `sorryAx` whose residual content is an `allMatches`
+body-grounding lemma. `eval_terminates` is stated in its
+membership-stable form (the literal list-equality form is
+false because `step` always appends rule-derived heads, including
+duplicates); the reverse (extension) direction is proved, and
+the auxiliary `iterate_stable_of_step_stable` reduces the
+forward (saturation) direction to step-stability at the
+Herbrand depth — the remaining `sorry` is the finite-
+Herbrand-base pigeonhole. Both residuals are named explicitly
+in `CheckAxioms.lean`. The corresponding open problems are
+listed in §6.
 
 # Implementation and conformance testing
 
