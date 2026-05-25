@@ -577,15 +577,60 @@ distribution through the join's row-correlation, even if $c$ is
 dropped from the final projection — the analogue at the join arm
 of Theorem 9's filter side-channel.
 
+**Theorem 12 (abstract DP-boundary soundness for aggregation,
+`rewrite_sound_aggregate`).** The Plan IR is extended with an
+$\mathit{Aggregate}(\mathit{op}, \mathit{col}, \mathit{groupBy},
+\mathit{inner})$ constructor where
+$\mathit{op} \in \{\mathrm{SUM}, \mathrm{COUNT}, \mathrm{MIN},
+\mathrm{MAX}, \mathrm{AVG}\}$ and the output schema is
+$\mathit{groupBy} \mathbin{+\!\!+} [\mathit{op}.\mathit{outputColumn}\
+\mathit{col}]$ (a synthesized name such as $\mathrm{Sum\_amount}$).
+The policy is extended with an aggregate-only grant form
+$\mathit{AggGrant}(p, r, \mathit{op}, \mathit{col})$ and an
+**abstract** predicate $\mathit{Policy.aggAllowed}\ P\ p\ r\
+\mathit{op}\ \mathit{col} : \mathrm{Bool}$ — the *DP boundary*. The
+boundary is intentionally parameterised: no specific mechanism
+(\(\varepsilon\)-DP additive noise, Laplace, Gaussian, k-anonymity)
+is picked, so a concrete refinement of $\mathit{aggAllowed}$
+replaces the executor's runtime check without re-stating the
+soundness theorem. An aggregate is *admissible* iff either
+$\mathit{col}$ is already in $P.\mathit{allowed}\ p\ r$, or
+$\mathit{aggAllowed}$ holds. The headline soundness on the
+non-$\mathit{Join}$ arm of the rewriter is
+$$
+  \forall c \in \sigma(\mathit{rewrite}(q)),\quad
+    c \in P.\mathit{allowed}\ p\ \mathit{touched}(q)
+      \;\lor\;
+    \exists\, (\mathit{op}, \mathit{col}) \in \mathit{aggregates}(q),
+$$
+$$\quad
+    \mathit{aggAdmissible}\ P\ p\ \mathit{touched}(q)\ (\mathit{op},
+      \mathit{col})\ \land\ c = \mathit{op}.\mathit{outputColumn}\
+      \mathit{col}.
+$$
+Companion theorems `rewrite_groupBy_sound` (group-by keys are
+column-grant-allowed; group-by keys appear verbatim and so do not
+flow through the DP boundary) and
+`rewrite_refuses_forbidden_aggregate` (an aggregate whose
+$(\mathit{op}, \mathit{col})$ is neither column-grant-allowed nor
+$\mathit{AggGrant}$-covered $\Rightarrow \mathit{none}$) bracket
+the surface. The DP-*mechanism* (noise schedule, budget bookkeeping,
+threshold semantics) remains open and is itemised in §6 — the Lean
+scaffold lands the boundary's *interface*, not its quantitative
+content.
+
 `CheckAxioms.lean` audits the axiom dependencies of each theorem.
-For Theorems 1, 2, 3, 4, 7, 8, 10, 11 the set is bounded by
+For Theorems 1, 2, 3, 4, 7, 8, 10, 11, 12 the set is bounded by
 $\{\texttt{propext}, \texttt{Quot.sound}\}$, Lean~4's foundational
 axioms, with no `sorry`. Theorems 5, 6, and 9 are fully proved on
 the non-$\mathit{Join}$ arm; the $\mathit{Join}$-arm composition
 (per-leg idempotence into Join-idempotence; widening through a
 two-leg key check; cross-leg forbidden filter) is isolated as
 $\texttt{sorryAx}$ in the audit and listed in §6 as the residual
-proof surface.
+proof surface. Theorem 12 is stated for non-$\mathit{Join}$ inputs
+(the Aggregate-inside-Join lift is a one-line corollary on top of
+the join soundness machinery already in place — `Plan.aggregates`
+distributes over $\mathit{Join}$'s two legs).
 
 **Datalog evaluator (`verifier/lean/Datalog.lean`).** The policy
 language is mechanised independently. Eight supporting
@@ -834,13 +879,30 @@ desugar into $(\mathit{Join} \circ \mathit{Filter})$
 compositions and so reduce to the binary case; an inductive
 generalisation to $n$-ary equi-joins is straightforward.
 
-*Aggregation with a differential-privacy boundary.* A
-principal may be permitted to read $\mathrm{SUM}(\mathit{amount})$
-without permission to read individual rows. The rewriter
-extension here is straightforward in shape but admits a
-non-trivial soundness statement once the differential-privacy
-boundary is parameterised; SEAL [@seal2023] and the faceted
-line [@faceted-haskell] are the closest reference points.
+*Aggregation with a differential-privacy boundary.* The scaffold
+landed in this draft. A principal may be permitted to compute
+$\mathrm{SUM}(\mathit{amount})$ without permission to read
+individual rows of $\mathit{amount}$; the Plan IR carries an
+$\mathit{Aggregate}$ constructor and the Policy carries an
+$\mathit{AggGrant}$ alongside the column grants. The rewriter
+admits an aggregate iff the column is already column-allowed *or*
+the abstract predicate $\mathit{Policy.aggAllowed}$ holds; the
+*output* of the rewrite is filtered through $\mathit{allowedOutputs}$,
+which extends $\mathit{allowed}$ with one synthesized name (e.g.
+$\mathrm{Sum\_amount}$) per admissible aggregate. The Lean
+soundness statement (`rewrite_sound_aggregate`, Theorem 12) is
+proved `sorry`-free under axioms
+$\{\texttt{propext}, \texttt{Quot.sound}\}$. What remains open is
+the *instantiation*: a concrete DP mechanism (\(\varepsilon\)-DP
+additive noise schedule, k-anonymity threshold, $\rho$-zCDP
+accountant) plugged into the executor's runtime check, with the
+quantitative content (budget accounting; composition theorems; the
+$(\varepsilon, \delta)$ inflation under repeated queries) mechanised
+against the boundary predicate. SEAL [@seal2023] and the faceted
+line [@faceted-haskell] remain the closest reference points; the
+DP-policy literature (Tumult, OpenDP) offers off-the-shelf
+mechanisms whose API we can match without re-mechanising the
+rewriter.
 
 *Capability attenuation inside the proof.* The Lean development
 takes $\mathit{Principal}$ as a flat string and assumes the
@@ -877,15 +939,17 @@ scripts/reproduce.sh
 ```
 
 Expected output ends with
-`21/21 cases pass (Lean reference == Rust impl)` for the
+`26/26 cases pass (Lean reference == Rust impl)` for the
 rewriter corpus AND `9/9 datalog cases pass (Lean Datalog
 reference == biscuit_auth::datalog::World)` for the Datalog
 corpus, plus an axiom audit bounded by `propext` and
-`Quot.sound` for the fully-proved theorems; `sorryAx` is
-isolated to two Datalog residuals (`eval_sound`,
-`eval_terminates`) and three $\mathit{Join}$-arm obligations
-of Theorems 5, 6, 9, all listed in §6. With
-`wasm-pack` present, the last step also emits
+`Quot.sound` for the fully-proved theorems (1–4, 7, 8, 10, 11,
+12, plus the three aggregation-specific theorems
+`rewrite_sound_aggregate`, `rewrite_groupBy_sound`,
+`rewrite_refuses_forbidden_aggregate`); `sorryAx` is isolated
+to two Datalog residuals (`eval_sound`, `eval_terminates`) and
+three $\mathit{Join}$-arm obligations of Theorems 5, 6, 9, all
+listed in §6. With `wasm-pack` present, the last step also emits
 `postern_wasm_bg.wasm` into `web/src/wasm/`. We do not quote a
 wall-clock budget — `time scripts/reproduce.sh` on the reader's
 hardware is the only honest measurement, and the dominant cost

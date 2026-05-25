@@ -62,6 +62,13 @@ end Json
 
 /-! ## Encoders for Postern types -/
 
+def encAggOp : AggOp → String
+  | .sum   => Json.str "sum"
+  | .count => Json.str "count"
+  | .min   => Json.str "min"
+  | .max   => Json.str "max"
+  | .avg   => Json.str "avg"
+
 def encPlan : Plan → String
   | .scan r       => Json.obj [("op", Json.str "scan"),    ("rel", Json.str r)]
   | .project p cs => Json.obj [("op", Json.str "project"), ("sub", encPlan p), ("cols", Json.strArr cs)]
@@ -73,6 +80,14 @@ def encPlan : Plan → String
       ("right", encPlan r),
       ("on",    Json.str on)
     ]
+  | .aggregate op col gb p =>
+    Json.obj [
+      ("op",      Json.str "aggregate"),
+      ("agg",     encAggOp op),
+      ("col",     Json.str col),
+      ("groupBy", Json.strArr gb),
+      ("inner",   encPlan p)
+    ]
 
 def encGrant (g : Grant) : String :=
   Json.obj [
@@ -81,7 +96,19 @@ def encGrant (g : Grant) : String :=
     ("columns",   Json.strArr g.columns)
   ]
 
-def encPolicy (P : Policy) : String := Json.arr (P.map encGrant)
+def encAggGrant (g : AggGrant) : String :=
+  Json.obj [
+    ("principal", Json.str g.principal),
+    ("relation",  Json.str g.relation),
+    ("op",        encAggOp g.op),
+    ("column",    Json.str g.column)
+  ]
+
+def encPolicy (P : Policy) : String :=
+  Json.obj [
+    ("grants",    Json.arr (P.grants.map encGrant)),
+    ("aggGrants", Json.arr (P.aggGrants.map encAggGrant))
+  ]
 
 /-- Catalog encoded as the slice of relations referenced by the plan
     or the policy. Total functions don't serialise, so we materialise
@@ -91,12 +118,14 @@ def encCatalog (cat : Catalog) (rels : List Relation) : String :=
   Json.obj (rels.eraseDups.map (fun r => (r, Json.strArr (cat r))))
 
 def planRels : Plan → List Relation
-  | .scan r       => [r]
-  | .project p _  => planRels p
-  | .filter  p _  => planRels p
-  | .join l r _   => planRels l ++ planRels r
+  | .scan r              => [r]
+  | .project p _         => planRels p
+  | .filter  p _         => planRels p
+  | .join l r _          => planRels l ++ planRels r
+  | .aggregate _ _ _ p   => planRels p
 
-def policyRels (P : Policy) : List Relation := P.map Grant.relation
+def policyRels (P : Policy) : List Relation :=
+  P.grants.map Grant.relation ++ P.aggGrants.map AggGrant.relation
 
 /-- Outcome JSON: either `{"kind":"accept", ...}` with the rewritten
     plan + schema + filterCols, or `{"kind":"refuse"}`. -/
@@ -196,25 +225,25 @@ def cases : List Case := [
   -- §C. Policy-language edge cases.
   { name := "empty_policy_denies_all",
     note := "edge — empty policy ⇒ accept with empty schema (no grants to match)",
-    catalog := Demo.cat, policy := [], principal := "CRM",
+    catalog := Demo.cat, policy := { grants := [] }, principal := "CRM",
     plan := .scan "users_data" },
 
   { name := "duplicate_grants_flat_union",
     note := "edge — two grants for the same (principal, relation) flat-union (no dedup)",
     catalog := Demo.cat,
-    policy := [
+    policy := { grants := [
       { principal := "CRM", relation := "users_data", columns := ["id", "name"] },
       { principal := "CRM", relation := "users_data", columns := ["name", "region"] }
-    ],
+    ] },
     principal := "CRM",
     plan := .scan "users_data" },
 
   { name := "policy_grants_columns_not_in_catalog",
     note := "edge — grant lists ssn but catalog doesn't ⇒ intersection drops ssn",
     catalog := smallCat,
-    policy := [
+    policy := { grants := [
       { principal := "CRM", relation := "users_data", columns := ["id", "ssn"] }
-    ],
+    ] },
     principal := "CRM",
     plan := .scan "users_data" },
 
@@ -255,7 +284,45 @@ def cases : List Case := [
       "join — refusal: CRM joins users_data ⋈ credit_bureau_imports on `id`; the " ++
       "right leg refuses (unknown relation), so the join refuses.",
     catalog := Demo.cat, policy := Demo.pol, principal := "CRM",
-    plan := .join (.scan "users_data") (.scan "credit_bureau_imports") "id" }
+    plan := .join (.scan "users_data") (.scan "credit_bureau_imports") "id" },
+
+  -- §E. Aggregation with the abstract DP boundary (paper §6, C3).
+  --
+  -- The boundary is parameterised in the Lean spec as
+  -- `Policy.aggAllowed`; the corpus exercises five shapes:
+  --   E1 ACCEPT — analytics-only role, AggGrant covers Sum(amount)
+  --   E2 REFUSE — analytics-only role, no AggGrant for Avg(amount)
+  --             and `amount` not in `allowed` ⇒ DP boundary refuses
+  --   E3 ACCEPT — column-grant already covers `amount` for
+  --             FraudRisk; aggregate admissible *trivially*
+  --             (no DP boundary needed, the existing grant
+  --             dominates).
+  --   E4 ACCEPT — Count(txn_id) AggGrant with no groupBy
+  --   E5 REFUSE — groupBy on a column with no column-grant
+  { name := "agg_sum_amount_analytics_via_agggrant",
+    note := "C3 ACCEPT — DP boundary lets Analytics compute Sum(amount) on transactions_data via AggGrant",
+    catalog := Demo.cat, policy := Demo.pol, principal := "Analytics",
+    plan := .aggregate .sum "amount" [] (.scan "transactions_data") },
+
+  { name := "agg_avg_amount_analytics_refused",
+    note := "C3 REFUSE — no AggGrant for Avg(amount) and amount ∉ allowed(Analytics, ...)",
+    catalog := Demo.cat, policy := Demo.pol, principal := "Analytics",
+    plan := .aggregate .avg "amount" [] (.scan "transactions_data") },
+
+  { name := "agg_sum_amount_fraudrisk_trivial",
+    note := "C3 ACCEPT (trivial) — FraudRisk already has column-grant on amount; aggregate dominates",
+    catalog := Demo.cat, policy := Demo.pol, principal := "FraudRisk",
+    plan := .aggregate .sum "amount" [] (.scan "transactions_data") },
+
+  { name := "agg_count_with_group_by_analytics",
+    note := "C3 ACCEPT — Count(txn_id) AggGrant + groupBy on no columns (whole-table)",
+    catalog := Demo.cat, policy := Demo.pol, principal := "Analytics",
+    plan := .aggregate .count "txn_id" [] (.scan "transactions_data") },
+
+  { name := "agg_groupBy_forbidden_column_refused",
+    note := "C3 REFUSE — groupBy on a column not in allowed (`merchant` for Analytics, no column-grant)",
+    catalog := Demo.cat, policy := Demo.pol, principal := "Analytics",
+    plan := .aggregate .sum "amount" ["merchant"] (.scan "transactions_data") }
 ]
 
 def encCase (c : Case) : String :=

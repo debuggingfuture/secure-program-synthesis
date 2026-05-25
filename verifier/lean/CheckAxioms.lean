@@ -16,27 +16,57 @@ import Bridge
       'rewrite_schema_subset'                 depends on [propext]
       'rewrite_sound'                         depends on [propext, Quot.sound]
                                               -- generalised statement using
-                                                 `Plan.touchedRels` + `Policy.allowedRels`;
+                                                 `Plan.touchedRels` + `Policy.allowedOutputsRels`;
                                                  collapses to single-relation form
-                                                 for non-`Join` plans.
+                                                 for non-`Join` plans, and to the
+                                                 standard column-grant form when no
+                                                 aggregates are present.
       'rewrite_filter_sound'                  depends on [propext, Quot.sound]
       'rewrite_no_new_columns'                depends on [propext]
       'rewrite_idempotent'                    depends on [propext, sorryAx]
-                                              -- non-`Join` arm fully proved;
-                                                 `Join` per-leg composition open.
+                                              -- non-`Join` arm fully proved
+                                                 (including the new `Aggregate`
+                                                  constructor); `Join` per-leg
+                                                 composition open.
       'rewrite_monotone'                      depends on [propext, sorryAx]
-                                              -- non-`Join` arm fully proved;
-                                                 `Join` widening composition open.
+                                              -- non-`Join` arm fully proved
+                                                 (including `Aggregate`); `Join`
+                                                 widening composition open.
+                                              -- hypothesis upgraded to range over
+                                                 `Policy.allowedOutputs` so it covers
+                                                 both column grants and AggGrants.
       'rewrite_refuses_unknown'               depends on [propext]
       'rewrite_refuses_forbidden_filter'      depends on [propext, sorryAx, Quot.sound]
                                               -- non-`Join` arm fully proved;
                                                  `Join` cross-leg forbidden-filter open.
       'rewrite_sound_join'                    depends on [propext, Quot.sound]
                                               -- corollary of `rewrite_sound`
-                                                 restricted to `Join` inputs.
+                                                 restricted to `Join` inputs, now
+                                                 phrased over `allowedOutputsRels`.
       'rewrite_refuses_unallowed_join_key'    does not depend on any axioms
                                               -- pure case-analysis on the `Join`
                                                  rewriter's key-membership branch.
+
+    aggregation (Postern.lean — paper §4 Theorem 12 / §6 C3):
+      'rewrite_sound_aggregate'               depends on [propext, Quot.sound]
+                                              -- abstract DP-boundary soundness for
+                                                 non-`Join` plans. Every output column
+                                                 is either column-allowed or a
+                                                 synthesized `op.outputColumn col`
+                                                 whose `(op, col)` is `aggAdmissible`
+                                                 (column-grant OR `AggGrant`).
+                                                 No specific DP mechanism (ε-DP,
+                                                 Laplace, Gaussian, k-anonymity) is
+                                                 picked here — a concrete refinement
+                                                 replaces `Policy.aggAllowed` without
+                                                 re-proving anything.
+      'rewrite_groupBy_sound'                 depends on [propext, Quot.sound]
+                                              -- groupBy keys are column-grant-allowed
+                                                 (no DP boundary, since group keys
+                                                  appear verbatim in the output).
+      'rewrite_refuses_forbidden_aggregate'   does not depend on any axioms
+                                              -- aggregate `(op, col)` with neither
+                                                 column-grant nor AggGrant ⇒ `none`.
 
     Datalog evaluator support lemmas (Datalog.lean — all `sorry`-free):
       'step_extensive'                        depends on [propext]
@@ -121,6 +151,11 @@ import Bridge
 -- Join-specific (Plan IR extended with `Join` constructor).
 #print axioms Postern.rewrite_sound_join
 #print axioms Postern.rewrite_refuses_unallowed_join_key
+-- Aggregation-specific (Plan IR extended with `Aggregate` constructor; paper §4 Theorem 12, §6 C3).
+-- All three are `sorry`-free under the abstract DP boundary `Policy.aggAllowed`.
+#print axioms Postern.rewrite_sound_aggregate
+#print axioms Postern.rewrite_groupBy_sound
+#print axioms Postern.rewrite_refuses_forbidden_aggregate
 
 -- Datalog evaluator — Datalog.lean
 #print axioms Postern.Datalog.step_extensive
