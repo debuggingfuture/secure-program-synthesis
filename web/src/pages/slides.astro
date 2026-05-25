@@ -3,7 +3,7 @@ import Base from "../layouts/Base.astro";
 ---
 
 <Base
-  title="Postern — 7-slide overview"
+  title="Postern — 8-slide overview"
   description="Seven slides summarising the Postern research artifact: problem, architecture, Lean proofs, Rust mirror, capability-bounded data flow, open problems."
   bare={true}
 >
@@ -44,21 +44,14 @@ import Base from "../layouts/Base.astro";
       <!-- S2: Problem -->
       <section>
         <h2>Agents need a governance layer at the lake</h2>
-        <p>
-          An agent's effective rights are <em>context-driven</em>: which
-          principal it acts for, which task it was invoked under, which
-          scope the caller granted. The same agent code, called by two
-          principals — or by one principal under two tasks — must read
-          two different views.
-        </p>
         <p class="small">
-          Traditional RBAC bakes a static
+          Agent rights are <em>context-driven</em> — principal, task,
+          scope — and the same agent code may legitimately serve
+          different views on different calls. Static
           <em>identity&nbsp;&rarr;&nbsp;role&nbsp;&rarr;&nbsp;permission</em>
-          chain at provisioning time and cannot encode any of those axes.
-          Per-engine RLS doesn't survive the ETL boundary; tenant
-          segregation forfeits the cross-source joins that motivate the
-          lakehouse. Policy has to move to the <em>query plane</em>, gated
-          under the agent's task-scoped identity at query time.
+          can't encode that; per-engine RLS doesn't survive ETL;
+          tenant segregation forfeits cross-source joins. Policy has
+          to move to the <em>query plane</em>.
         </p>
         <pre class="mermaid" is:raw>
 flowchart LR
@@ -113,7 +106,55 @@ flowchart LR
         </p>
       </section>
 
-      <!-- S4: What Lean proves -->
+      <!-- S4: Sample policy (Datalog at biscuit) -->
+      <section>
+        <h2>Sample policy — financial institution</h2>
+        <p class="small muted">
+          Surface syntax (left) is sugar over ground
+          <code>right(principal, relation, column)</code> Datalog
+          facts (right) — the in-scope fragment of biscuit-auth's
+          Datalog dialect. Attenuation, expiry, audience, and key
+          rotation are <a href="#open-problems">open problems</a>
+          (paper &sect;6).
+        </p>
+        <div class="policy-grid">
+          <div>
+            <h3 class="policy-title">policy.postern</h3>
+            <pre class="policy-snip"><code>{`grant CRM       on users_data
+  { id, name, region, age }
+
+grant CardOps   on cards_data
+  { card_id, card_type, limit, activated }
+
+grant FraudRisk on transactions_data
+  { txn_id, card_id, amount, merchant, timestamp }
+
+grant FraudRisk on users_data
+  { id, region }`}</code></pre>
+          </div>
+          <div>
+            <h3 class="policy-title">Datalog (biscuit-auth)</h3>
+            <pre class="policy-snip"><code>{`right("CRM", "users_data", "id");
+right("CRM", "users_data", "name");
+right("CRM", "users_data", "region");
+right("CRM", "users_data", "age");
+
+right("CardOps", "cards_data", "card_id");
+right("CardOps", "cards_data", "card_type");
+…
+right("FraudRisk", "users_data", "id");
+right("FraudRisk", "users_data", "region");`}</code></pre>
+          </div>
+        </div>
+        <p class="small muted">
+          Multiple grants on the same <code>(p, r)</code>
+          flat-union — the policy language is monotone grant-only,
+          so review is additive: a new grant can only widen.
+          Anything outside the union is denied (fail-closed).
+        </p>
+      </section>
+
+      <!-- S5: What Lean proves -->
       <section>
         <h2>What Lean proves</h2>
         <table class="theorems">
@@ -162,7 +203,7 @@ flowchart LR
         </p>
       </section>
 
-      <!-- S5: Learning from Cedar -->
+      <!-- S6: Learning from Cedar -->
       <section>
         <h2>Learning from Cedar</h2>
         <p>
@@ -183,7 +224,7 @@ flowchart LR
         </p>
       </section>
 
-      <!-- S6: Capability-bounded data flow (paper §4) -->
+      <!-- S7: Capability-bounded data flow (paper §4) -->
       <section>
         <h2>Capability-bounded data flow</h2>
         <p class="small">
@@ -236,8 +277,8 @@ where S: FnOnce(T) -> String;   // T never escapes the sink`}</code></pre>
         </p>
       </section>
 
-      <!-- S7: Open problems -->
-      <section>
+      <!-- S8: Open problems -->
+      <section id="open-problems">
         <h2>Open problems</h2>
         <ul>
           <li>Block <strong>attenuation</strong> — biscuit blocks can shrink rights mid-flight; the rewriter doesn't yet model this.</li>
@@ -361,6 +402,46 @@ where S: FnOnce(T) -> String;   // T never escapes the sink`}</code></pre>
     }
 
     .reveal pre.rust-snip code {
+      background: transparent;
+      padding: 0;
+    }
+
+    .reveal .policy-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.8rem;
+      margin: 0.5rem auto;
+      max-width: 95%;
+    }
+
+    .reveal .policy-grid > div {
+      min-width: 0;
+    }
+
+    .reveal .policy-title {
+      font-family: ui-monospace, "JetBrains Mono", Menlo, monospace;
+      font-size: 0.72rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #888;
+      margin: 0 0 0.25rem;
+      text-align: left;
+    }
+
+    .reveal pre.policy-snip {
+      background: #f7f4ec;
+      border: 1px solid #d9d6cf;
+      padding: 0.55rem 0.75rem;
+      font-family: ui-monospace, "JetBrains Mono", Menlo, monospace;
+      font-size: 0.66rem;
+      line-height: 1.38;
+      margin: 0;
+      text-align: left;
+      white-space: pre;
+      overflow-x: auto;
+    }
+
+    .reveal pre.policy-snip code {
       background: transparent;
       padding: 0;
     }
