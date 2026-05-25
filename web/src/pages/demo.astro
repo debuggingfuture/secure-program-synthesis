@@ -200,6 +200,53 @@ const demoConfig = {
     </section>
 
     <section class="block">
+      <h2>2b. The biscuit on the wire</h2>
+      <p class="muted">
+        On every request, <code>biscuit_auth::datalog::World</code> is
+        loaded with two layers of Datalog before evaluating an
+        <code>allow if right($p, $r, $c)</code> query. Pick a principal
+        below to see the bearer block update.
+      </p>
+      <div class="policy-grid biscuit-grid">
+        <div>
+          <h3 class="policy-title">
+            Authority block
+            <span class="biscuit-source biscuit-source--gw">gateway-loaded</span>
+          </h3>
+          <p class="muted small biscuit-cap">
+            Compiled from <code>policy.postern</code> at gateway startup
+            and re-added via <code>World::add_fact</code> per request.
+            Trusted by construction; not signed by the bearer.
+          </p>
+          <pre class="policy-datalog biscuit-pane biscuit-pane--gw">{datalogText}</pre>
+        </div>
+        <div>
+          <h3 class="policy-title">
+            Bearer token
+            <span class="biscuit-source biscuit-source--bearer" id="biscuit-principal-label">CRM</span>
+          </h3>
+          <p class="muted small biscuit-cap">
+            Ed25519-signed by the issuer (the bank's IAM). Carries only
+            the principal identity — no rights, no scope.
+          </p>
+          <pre class="policy-datalog biscuit-pane biscuit-pane--bearer" id="biscuit-bearer-logical">user(&quot;CRM&quot;).</pre>
+          <h4 class="biscuit-subhead">Serialized (mock)</h4>
+          <pre class="biscuit-wire" id="biscuit-bearer-wire">En0KEwoEQ1JNGAMiCQoHCAoSAxiACBIkCAASIA...</pre>
+        </div>
+      </div>
+      <p class="muted small biscuit-note">
+        <strong>Not modelled in this artifact</strong> (paper §6 open
+        problems): <em>attenuation</em> (3rd-party caveats narrowing
+        the bearer's rights), <em>audience</em> (binding the token to
+        one gateway URL), <em>expiry</em> (<code>check if time($t),
+        $t &lt; 2026-06-01T00:00:00Z</code>), <em>key rotation</em>
+        (root-key rollover without re-issuing every bearer). The
+        serialized blob is a mock — not a valid Ed25519-signed token —
+        because the WASM bundle doesn't ship biscuit-auth today.
+      </p>
+    </section>
+
+    <section class="block">
       <h2>3. Try it</h2>
 
       <form id="rewrite-form" class="form" autocomplete="off">
@@ -352,6 +399,44 @@ const demoConfig = {
 
     relationSelect.addEventListener("change", refreshColumnList);
     refreshColumnList();
+
+    // --- §2b: per-principal biscuit panes ---------------------------------
+    // Mock tokens — purely for visual flavor; not real biscuits. The leading
+    // bytes mimic a biscuit v3 protobuf header (En0K... = `0x12 0x7d 0x0a`)
+    // so the shape is plausible without minting actual Ed25519 signatures.
+    const MOCK_BEARER_TOKENS: Record<string, string> = {
+      CRM: "En0KEwoEQ1JNGAMiCQoHCAoSAxiACBIkCAASIB7n3T_pmqXcZmAYqGmU0AdgWxPq",
+      CardOps: "En4KFAoHQ2FyZE9wcxgDIgkKBwgKEgMYgAgSJAgAEiB9KqL2vXmYcZmA0Bjpc",
+      FraudRisk: "En8KFgoJRnJhdWRSaXNrGAMiCQoHCAoSAxiACBIkCAASIPMtR9nyzAhWcXqV",
+    };
+
+    const biscuitPrincipalLabel = document.getElementById(
+      "biscuit-principal-label",
+    ) as HTMLElement | null;
+    const biscuitLogical = document.getElementById(
+      "biscuit-bearer-logical",
+    ) as HTMLElement | null;
+    const biscuitWire = document.getElementById(
+      "biscuit-bearer-wire",
+    ) as HTMLElement | null;
+
+    function refreshBiscuitPane(principal: string): void {
+      if (biscuitPrincipalLabel) biscuitPrincipalLabel.textContent = principal;
+      if (biscuitLogical) {
+        biscuitLogical.textContent = `user("${principal}").`;
+      }
+      if (biscuitWire) {
+        biscuitWire.textContent =
+          MOCK_BEARER_TOKENS[principal] ?? MOCK_BEARER_TOKENS.CRM!;
+      }
+    }
+
+    const principalGroup = document.getElementById("principal-group");
+    principalGroup?.addEventListener("change", (e) => {
+      const tgt = e.target as HTMLInputElement | null;
+      if (tgt && tgt.name === "principal") refreshBiscuitPane(tgt.value);
+    });
+    refreshBiscuitPane(cfg.principals[0] ?? "CRM");
 
     // Build the input plan IR from form selections.
     function buildPlan(formData: FormData): Plan {
@@ -583,6 +668,7 @@ const demoConfig = {
       // Defer until after defaults are re-applied.
       setTimeout(() => {
         refreshColumnList();
+        refreshBiscuitPane(cfg.principals[0] ?? "CRM");
         result.innerHTML = `<p class="muted">Pick options and submit to see the rewrite.</p>`;
       }, 0);
     });
@@ -997,5 +1083,81 @@ const demoConfig = {
 
   .about ul {
     margin: 0.6rem 0 0;
+  }
+
+  /* §2b — biscuit-on-the-wire panes. Reuses .policy-grid layout. */
+  .biscuit-grid .policy-title {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+  }
+
+  .biscuit-source {
+    font-family: var(--font-mono);
+    font-size: 0.66rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 0.08rem 0.42rem;
+    border-radius: 2px;
+    font-weight: 500;
+  }
+
+  .biscuit-source--gw {
+    background: rgba(47, 107, 58, 0.16);
+    color: var(--accept);
+  }
+
+  .biscuit-source--bearer {
+    background: rgba(176, 122, 58, 0.18);
+    color: #b07a3a;
+  }
+
+  .biscuit-cap {
+    margin: 0 0 0.4rem;
+  }
+
+  .biscuit-pane {
+    margin: 0;
+  }
+
+  .biscuit-pane--gw {
+    border-left: 3px solid var(--accept);
+  }
+
+  .biscuit-pane--bearer {
+    border-left: 3px solid #b07a3a;
+  }
+
+  .biscuit-subhead {
+    margin: 0.7rem 0 0.3rem;
+    font-family: var(--font-mono);
+    font-size: 0.74rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--fg-muted);
+    font-weight: 500;
+  }
+
+  .biscuit-wire {
+    font-family: ui-monospace, "JetBrains Mono", Menlo, monospace;
+    font-size: 0.74rem;
+    line-height: 1.35;
+    margin: 0;
+    padding: 0.5rem 0.7rem;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    color: var(--fg-muted);
+    word-break: break-all;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+
+  .biscuit-note {
+    margin-top: 0.9rem;
+    padding: 0.55rem 0.8rem;
+    border: 1px dashed var(--border-strong);
+    border-radius: 3px;
+    line-height: 1.5;
   }
 </style>
