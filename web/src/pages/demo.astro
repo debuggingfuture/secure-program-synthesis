@@ -279,7 +279,14 @@ const demoConfig = {
         <fieldset>
           <legend>Columns to project (Plan: Scan → Project)</legend>
           <div class="columns" id="columns-list" />
-          <p class="muted small">Leave empty = project nothing (output schema will be policy-allowed columns only).</p>
+          <p class="muted small">
+            Columns shown in <span class="sensitive">red</span> are
+            policy-sensitive for <em>some</em> principal — PII, PAN, or
+            similarly scoped fields. They aren't blocked at the form
+            level; submit and the rewriter will drop them if the chosen
+            principal lacks a grant. Leave the list empty to project
+            nothing (output schema will be policy-allowed columns only).
+          </p>
         </fieldset>
 
         <fieldset>
@@ -310,12 +317,6 @@ const demoConfig = {
             (<code>postern-core::rewrite</code>) compiled to
             <code>wasm32-unknown-unknown</code> via <code>wasm-pack</code>.
             It mirrors the Lean reference one-for-one.
-          </li>
-          <li>
-            The <strong>Biscuit-Datalog migration is in progress</strong>:
-            the production gateway will dispatch through
-            <code>biscuit_auth::datalog::World</code>, but that pathway is
-            task #4 and is not what this WASM executes today.
           </li>
           <li>
             Refusal reasons surfaced: <em>unknown relation</em>
