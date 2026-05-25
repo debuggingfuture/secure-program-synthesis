@@ -22,8 +22,26 @@ import Base from "../layouts/Base.astro";
       <div class="hero__ctas">
         <a class="cta cta--primary" href="/paper">Read the paper</a>
         <a class="cta" href="/paper.pdf">Download PDF</a>
-        <a class="cta" href="/slides">6-slide overview</a>
+        <a class="cta" href="/slides">Open slides ↗</a>
         <a class="cta" href="/demo">Try the rewriter (WASM)</a>
+      </div>
+    </section>
+
+    <section class="slides-embed" aria-label="6-slide overview">
+      <div class="slides-embed__head">
+        <h2>6-slide overview</h2>
+        <p class="muted">
+          Use arrow keys / swipe to navigate. The deck is also live at
+          <a href="/slides">/slides</a> for full-screen viewing.
+        </p>
+      </div>
+      <div class="slides-embed__frame">
+        <iframe
+          src="/slides"
+          title="Postern — 6-slide overview"
+          loading="lazy"
+          allowfullscreen
+        ></iframe>
       </div>
     </section>
 
@@ -166,6 +184,50 @@ import Base from "../layouts/Base.astro";
   .cta--primary:hover {
     color: #fff;
     opacity: 0.92;
+  }
+
+  .slides-embed {
+    margin: 2.4rem 0 0;
+  }
+
+  .slides-embed__head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 1rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.6rem;
+  }
+
+  .slides-embed__head h2 {
+    font-family: var(--font-mono);
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--accent);
+    margin: 0;
+  }
+
+  .slides-embed__head p {
+    margin: 0;
+    font-size: 0.86rem;
+  }
+
+  .slides-embed__frame {
+    position: relative;
+    aspect-ratio: 16 / 9;
+    border: 1px solid var(--border-strong);
+    border-radius: 4px;
+    overflow: hidden;
+    background: #fff;
+  }
+
+  .slides-embed__frame iframe {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    border: 0;
   }
 
   .grid {
