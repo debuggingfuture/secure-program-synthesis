@@ -11,16 +11,32 @@ import Bridge
 
   Expected output (Lean 4.29.1, no Mathlib):
 
-    rewriter (Postern.lean — all `sorry`-free):
-      'rewrite_touched'                       does not depend on any axioms
+    rewriter (Postern.lean):
+      'rewrite_touched'                       depends on [propext]
       'rewrite_schema_subset'                 depends on [propext]
-      'rewrite_sound'                         depends on [propext]
+      'rewrite_sound'                         depends on [propext, Quot.sound]
+                                              -- generalised statement using
+                                                 `Plan.touchedRels` + `Policy.allowedRels`;
+                                                 collapses to single-relation form
+                                                 for non-`Join` plans.
       'rewrite_filter_sound'                  depends on [propext, Quot.sound]
       'rewrite_no_new_columns'                depends on [propext]
-      'rewrite_idempotent'                    depends on [propext]
-      'rewrite_monotone'                      depends on [propext]
-      'rewrite_refuses_unknown'               does not depend on any axioms
-      'rewrite_refuses_forbidden_filter'      depends on [propext, Quot.sound]
+      'rewrite_idempotent'                    depends on [propext, sorryAx]
+                                              -- non-`Join` arm fully proved;
+                                                 `Join` per-leg composition open.
+      'rewrite_monotone'                      depends on [propext, sorryAx]
+                                              -- non-`Join` arm fully proved;
+                                                 `Join` widening composition open.
+      'rewrite_refuses_unknown'               depends on [propext]
+      'rewrite_refuses_forbidden_filter'      depends on [propext, sorryAx, Quot.sound]
+                                              -- non-`Join` arm fully proved;
+                                                 `Join` cross-leg forbidden-filter open.
+      'rewrite_sound_join'                    depends on [propext, Quot.sound]
+                                              -- corollary of `rewrite_sound`
+                                                 restricted to `Join` inputs.
+      'rewrite_refuses_unallowed_join_key'    does not depend on any axioms
+                                              -- pure case-analysis on the `Join`
+                                                 rewriter's key-membership branch.
 
     Datalog evaluator support lemmas (Datalog.lean — all `sorry`-free):
       'step_extensive'                        depends on [propext]
@@ -102,6 +118,9 @@ import Bridge
 #print axioms Postern.rewrite_monotone
 #print axioms Postern.rewrite_refuses_unknown
 #print axioms Postern.rewrite_refuses_forbidden_filter
+-- Join-specific (Plan IR extended with `Join` constructor).
+#print axioms Postern.rewrite_sound_join
+#print axioms Postern.rewrite_refuses_unallowed_join_key
 
 -- Datalog evaluator — Datalog.lean
 #print axioms Postern.Datalog.step_extensive
