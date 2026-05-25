@@ -19,6 +19,17 @@ if ! command -v "$PDF_ENGINE" >/dev/null 2>&1; then
   exit 1
 fi
 
+# Re-render mermaid figures to both PDF (for tectonic) and SVG (for the
+# web /paper renderer, since browsers don't display PDFs in <img> tags).
+# Source of truth is the .mmd; PDF + SVG are derived. mmdc is invoked via
+# npx so contributors don't need a global install.
+for src in figures/*.mmd; do
+  [ -f "$src" ] || continue
+  base="${src%.mmd}"
+  npx -y -p @mermaid-js/mermaid-cli mmdc -i "$src" -o "$base.pdf" -b transparent >/dev/null
+  npx -y -p @mermaid-js/mermaid-cli mmdc -i "$src" -o "$base.svg" -b transparent >/dev/null
+done
+
 pandoc paper.md \
   --citeproc \
   --bibliography=references.bib \
@@ -30,10 +41,16 @@ pandoc paper.md \
 echo "wrote $(pwd)/paper.pdf"
 
 # Mirror to the web site's public/ so the landing page can link to the
-# hosted PDF at /paper.pdf. The web build (`pnpm --filter web build`)
-# copies anything under public/ verbatim to dist/.
+# hosted PDF at /paper.pdf and the /paper renderer can <img>-embed the
+# SVG figures at /figures/*.svg. The web build (`pnpm --filter web
+# build`) copies anything under public/ verbatim to dist/.
 WEB_PUBLIC="$(cd .. && pwd)/web/public"
 if [ -d "$WEB_PUBLIC" ]; then
   cp paper.pdf "$WEB_PUBLIC/paper.pdf"
-  echo "mirrored to $WEB_PUBLIC/paper.pdf"
+  mkdir -p "$WEB_PUBLIC/figures"
+  for svg in figures/*.svg; do
+    [ -f "$svg" ] || continue
+    cp "$svg" "$WEB_PUBLIC/figures/"
+  done
+  echo "mirrored to $WEB_PUBLIC/paper.pdf + $WEB_PUBLIC/figures/"
 fi
