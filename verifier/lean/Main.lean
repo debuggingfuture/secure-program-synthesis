@@ -66,6 +66,13 @@ def encPlan : Plan → String
   | .scan r       => Json.obj [("op", Json.str "scan"),    ("rel", Json.str r)]
   | .project p cs => Json.obj [("op", Json.str "project"), ("sub", encPlan p), ("cols", Json.strArr cs)]
   | .filter  p c  => Json.obj [("op", Json.str "filter"),  ("sub", encPlan p), ("col", Json.str c)]
+  | .join l r on  =>
+    Json.obj [
+      ("op",    Json.str "join"),
+      ("left",  encPlan l),
+      ("right", encPlan r),
+      ("on",    Json.str on)
+    ]
 
 def encGrant (g : Grant) : String :=
   Json.obj [
@@ -87,6 +94,7 @@ def planRels : Plan → List Relation
   | .scan r       => [r]
   | .project p _  => planRels p
   | .filter  p _  => planRels p
+  | .join l r _   => planRels l ++ planRels r
 
 def policyRels (P : Policy) : List Relation := P.map Grant.relation
 
@@ -223,7 +231,31 @@ def cases : List Case := [
   { name := "project_listing_nonexistent_column",
     note := "edge — Project of `nonexistent` is dropped by schema intersection",
     catalog := Demo.cat, policy := Demo.pol, principal := "CRM",
-    plan := .project (.scan "users_data") ["id", "nonexistent"] }
+    plan := .project (.scan "users_data") ["id", "nonexistent"] },
+
+  -- §D. Cross-relation joins (C1 — paper §6 → §4).
+  { name := "join_legal_key_both_sides_allow",
+    note :=
+      "join — FraudRisk joins transactions⋈users on `card_id`/`id`; the join key " ++
+      "needs to be policy-allowed on BOTH legs. For this case we degenerate to a " ++
+      "self-join of users_data on `id` (FraudRisk holds `id` on users_data).",
+    catalog := Demo.cat, policy := Demo.pol, principal := "FraudRisk",
+    plan := .join (.scan "users_data") (.scan "users_data") "id" },
+
+  { name := "join_key_forbidden_on_one_leg_refused",
+    note :=
+      "join — refusal: CRM tries users⋈users on `ssn`. CRM has no grant for `ssn` " ++
+      "on users_data; the join-key leak rule refuses regardless of the legs' own " ++
+      "rewrite outcome.",
+    catalog := Demo.cat, policy := Demo.pol, principal := "CRM",
+    plan := .join (.scan "users_data") (.scan "users_data") "ssn" },
+
+  { name := "join_with_refusing_leg_refused",
+    note :=
+      "join — refusal: CRM joins users_data ⋈ credit_bureau_imports on `id`; the " ++
+      "right leg refuses (unknown relation), so the join refuses.",
+    catalog := Demo.cat, policy := Demo.pol, principal := "CRM",
+    plan := .join (.scan "users_data") (.scan "credit_bureau_imports") "id" }
 ]
 
 def encCase (c : Case) : String :=
