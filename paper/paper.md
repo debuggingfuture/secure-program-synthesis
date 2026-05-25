@@ -520,10 +520,40 @@ implementation.
 
 # Evaluation: a financial institution with three principals
 
-We evaluate the artifact on the Kaggle
-`transactions-fraud-datasets` schema. The policy is reproduced
-in `scenarios/financial-institution/policy.postern`; the
-principal cases are summarised below.
+The scenario is illustrative, not a deployment claim. We pick a
+public schema — the Kaggle
+[`transactions-fraud-datasets`](https://www.kaggle.com/datasets/computingvictor/transactions-fraud-datasets)
+— that is small enough to reproduce end-to-end in the conformance
+harness yet realistic enough to surface the three failure modes
+the rewriter must rule out: PII over-projection, filter
+side-channels on forbidden columns, and cross-departmental reach.
+The schema has three tables — `users_data` (customer-level PII
+and demographics), `cards_data` (card metadata including PAN and
+limit), and `transactions_data` (ledger entries) — which is the
+minimal shape that allows a cross-source policy story while
+keeping the IR single-relation (§6 lifts the latter restriction).
+Around it we instantiate three department-scoped agent
+principals that a retail bank would typically run:
+
+- **CRM** (Customer Relationship Management) — segmentation and
+  customer-support lookups. Needs identifiers and demographics
+  on `users_data`; never sees cards, transactions, or PII
+  fields (`ssn`, `email`).
+- **CardOps** (Card Operations) — issuance, activation, limit
+  changes. Needs card metadata on `cards_data` but **never the
+  full PAN** (`card_number`, PCI-DSS scope) and has no business
+  with users or transactions in this scenario.
+- **FraudRisk** (Fraud and Risk Analytics) — anomalous-spend
+  investigation. Needs the full `transactions_data` plus a
+  minimum-necessary slice of `users_data` (just `id` + `region`)
+  to bucket by geography; does not need `name`/`age`/PII.
+
+A fourth principal `Marketing` appears in the case table to
+exercise the unknown-principal fail-closed path. The full policy
+is reproduced verbatim in
+`scenarios/financial-institution/policy.postern` and rendered
+inline in §3 Policy. The case table below summarises the
+behavioural rows of the corpus.
 
 | principal   | plan                                | outcome             | rewritten schema                       |
 | ----------- | ----------------------------------- | ------------------- | -------------------------------------- |
