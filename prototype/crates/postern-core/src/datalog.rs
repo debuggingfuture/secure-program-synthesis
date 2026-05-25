@@ -76,7 +76,10 @@ pub struct Atom {
 impl Atom {
     /// Convenience: a fully-ground atom over `String` constants
     /// (Lean's `Atom.ground`).
-    pub fn ground(pred: impl Into<String>, args: impl IntoIterator<Item = impl Into<String>>) -> Self {
+    pub fn ground(
+        pred: impl Into<String>,
+        args: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
         Self {
             pred: pred.into(),
             args: args.into_iter().map(|s| Term::cst(s)).collect(),
@@ -166,7 +169,7 @@ mod biscuit_backend {
 
     use super::*;
     use biscuit_auth::datalog::{
-        Fact as BFact, Origin, Predicate as BPred, RunLimits, Rule as BRule, SymbolTable,
+        Fact as BFact, Origin, Predicate as BPred, Rule as BRule, RunLimits, SymbolTable,
         Term as BTerm, TrustedOrigins, World,
     };
     use std::time::Duration;
@@ -207,11 +210,7 @@ mod biscuit_backend {
     /// Evaluate `program` and return the columns `prin` may
     /// read on `rel` — the mem-set of derived
     /// `right(prin, rel, c)` ground atoms.
-    pub fn allowed(
-        program: &Program,
-        prin: &str,
-        rel: &str,
-    ) -> Result<Vec<String>, DatalogError> {
+    pub fn allowed(program: &Program, prin: &str, rel: &str) -> Result<Vec<String>, DatalogError> {
         // Reject non-ground facts up front: Lean's `Program.facts`
         // is `List Atom` but only ground atoms are sensible there.
         for f in &program.facts {
@@ -305,11 +304,7 @@ mod biscuit_backend {
 /// feature; without it this function returns a clear error so
 /// callers get a deterministic compile-or-runtime failure rather
 /// than silently degraded behaviour.
-pub fn allowed(
-    program: &Program,
-    prin: &str,
-    rel: &str,
-) -> Result<Vec<String>, DatalogError> {
+pub fn allowed(program: &Program, prin: &str, rel: &str) -> Result<Vec<String>, DatalogError> {
     #[cfg(feature = "datalog-biscuit")]
     {
         biscuit_backend::allowed(program, prin, rel)

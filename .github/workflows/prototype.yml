@@ -31,5 +31,9 @@ jobs:
         run: cargo test -p postern-core --features datalog-biscuit
       - name: cargo clippy (datalog-biscuit feature)
         run: cargo clippy -p postern-core --features datalog-biscuit -- -D warnings
-      - name: conformance test against committed corpus
+      - name: rewriter conformance test against committed corpus
         run: cargo run -p postern-diff -- corpus/postern-corpus.json
+      - name: datalog conformance test against committed corpus
+        run: cargo run -p postern-datalog-diff -- corpus/postern-datalog-corpus.json
+      - name: cargo clippy (postern-datalog-diff)
+        run: cargo clippy -p postern-datalog-diff --all-targets -- -D warnings
