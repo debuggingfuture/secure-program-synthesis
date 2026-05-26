@@ -160,6 +160,34 @@ function renderMath(src: string, displayMode: boolean): string {
   }
 }
 
+/**
+ * Holding pen for KaTeX HTML so it doesn't pass through markdown-it.
+ *
+ * markdown-it operates on the text inside HTML tags as well as
+ * between them, so leaving the raw KaTeX output in the body has it
+ * mangled: TeX source preserved in `<annotation
+ * encoding="application/x-tex">…</annotation>` contains backslashes
+ * and underscores that markdown rewrites to `<br>` and `<em>`. Those
+ * stray HTML elements end up *inside* `<math>` foreign content. Then
+ * Chrome's HTML5 parser, encountering void/inline HTML inside MathML,
+ * stops returning to HTML mode for the rest of the document: every
+ * heading after the first such math expression becomes `<mi>` and the
+ * page visually truncates around that point.
+ *
+ * The mitigation: swap each KaTeX block for a placeholder before
+ * markdown-it runs, then substitute the saved HTML back in after.
+ * Placeholder is alphanumeric so no inline syntax can target it.
+ */
+interface MathSlots {
+  blocks: string[];
+}
+const PLACEHOLDER_PREFIX = "POSTERNMATHSLOT";
+function reserveMathSlot(slots: MathSlots, html: string): string {
+  const id = slots.blocks.length;
+  slots.blocks.push(html);
+  return `${PLACEHOLDER_PREFIX}${id}END`;
+}
+
 interface CitationState {
   /** key → 1-based index in the rendered references section */
   indices: Map<string, number>;
@@ -239,17 +267,18 @@ function escapeAttr(s: string): string {
  * we used text-token placeholders but markdown-it's typographer was
  * rewriting their whitespace delimiters to U+FFFD replacement chars.
  */
-function renderMathSpans(body: string): string {
+function renderMathSpans(body: string, slots: MathSlots): string {
   let out = body;
 
-  // Display math: `$$...$$` — emit a block-level <div> set off by
-  // blank lines so markdown-it treats it as an HTML block.
   out = out.replace(
     /\$\$([\s\S]+?)\$\$/g,
     (_m, expr: string) =>
-      '\n\n<div class="math-display">' +
-      renderMath(expr.trim(), true) +
-      "</div>\n\n",
+      "\n\n" +
+      reserveMathSlot(
+        slots,
+        '<div class="math-display">' + renderMath(expr.trim(), true) + "</div>",
+      ) +
+      "\n\n",
   );
 
   // Inline math: `$...$`. Pandoc rule: opening `$` must NOT be
@@ -262,21 +291,30 @@ function renderMathSpans(body: string): string {
     /(^|[^\w\\$])\$([^\s$][^$]*?[^\s$])\$(?!\d)/g,
     (_m, pre: string, expr: string) =>
       pre +
-      '<span class="math-inline">' +
-      renderMath(expr, false) +
-      "</span>",
+      reserveMathSlot(
+        slots,
+        '<span class="math-inline">' + renderMath(expr, false) + "</span>",
+      ),
   );
   // Single-character inline math (e.g. `$x$`).
   out = out.replace(
     /(^|[^\w\\$])\$([^\s$])\$(?!\d)/g,
     (_m, pre: string, expr: string) =>
       pre +
-      '<span class="math-inline">' +
-      renderMath(expr, false) +
-      "</span>",
+      reserveMathSlot(
+        slots,
+        '<span class="math-inline">' + renderMath(expr, false) + "</span>",
+      ),
   );
 
   return out;
+}
+
+function restoreMath(html: string, slots: MathSlots): string {
+  return html.replace(
+    new RegExp(`${PLACEHOLDER_PREFIX}(\\d+)END`, "g"),
+    (_m, id: string) => slots.blocks[Number(id)] ?? "",
+  );
 }
 
 /** Render the paper at `paper/paper.md`. */
@@ -289,9 +327,19 @@ export async function renderPaper(): Promise<RenderedPaper> {
   const { fm, body } = parseFrontmatter(raw);
   const state: CitationState = { indices: new Map(), order: [] };
 
+  // Drop the trailing `# References` + pandoc `::: {#refs} ... :::`
+  // block: the page template renders its own references section from
+  // BibTeX, so leaving the markdown source produces a duplicate
+  // heading and a literal "::: {#refs}" paragraph in the body.
+  // Pandoc still sees the original markdown for the PDF build.
+  const trimmed = body
+    .replace(/\n#\s+References\s*\n[\s\S]*$/i, "\n")
+    .replace(/^:::\s*(\{[^}]*\})?\s*$/gm, "")
+    .replace(/^:::\s*$/gm, "");
+
   // 1. resolve citations FIRST so the `<sup>` anchors survive any
   //    later text mutation.
-  const cited = resolveCitations(body, state);
+  const cited = resolveCitations(trimmed, state);
 
   // 1b. Rewrite pandoc-flavoured figure references for HTML output.
   //     Markdown source carries `![cap](figures/foo.pdf){#fig:x width=N%}`
@@ -308,22 +356,24 @@ export async function renderPaper(): Promise<RenderedPaper> {
       "</figure>",
   );
 
-  // 2. swap math expressions for inline KaTeX HTML.
-  const mathed = renderMathSpans(figured);
+  // 2. swap math expressions for placeholders; KaTeX HTML is held in
+  //    `slots` until after markdown-it runs (see MathSlots docs).
+  const slots: MathSlots = { blocks: [] };
+  const mathed = renderMathSpans(figured, slots);
 
-  // 3. markdown → HTML.
+  // 3. markdown → HTML, then restore KaTeX HTML.
   const md = setupMarkdown();
-  const html = md.render(mathed);
+  const html = restoreMath(md.render(mathed), slots);
 
   // 3b. Render the abstract through the same pipeline so its
-  //     `$math$`, `[@cite]`, `` `code` ``, and `**bold**` resolve
-  //     instead of appearing as literal source text. We use
-  //     `renderInline` so the abstract doesn't get wrapped in <p>.
+  //     `[@cite]`, `` `code` ``, and `**bold**` resolve instead of
+  //     appearing as literal source text. We use `renderInline` so
+  //     the abstract doesn't get wrapped in <p>.
   let abstractHtml = "";
   if (typeof fm.abstract === "string" && fm.abstract.trim().length) {
     const aCited = resolveCitations(fm.abstract, state);
-    const aMathed = renderMathSpans(aCited);
-    abstractHtml = md.renderInline(aMathed);
+    const aMathed = renderMathSpans(aCited, slots);
+    abstractHtml = restoreMath(md.renderInline(aMathed), slots);
   }
 
   // 4. build references section in citation order.
